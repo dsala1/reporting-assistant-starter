@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import * as XLSX from 'xlsx';
 
 export default function WorkspacesPage() {
   const [user, setUser] = useState(null);
@@ -77,15 +78,65 @@ export default function WorkspacesPage() {
     window.location.href = '/';
   }
 
+  // Hash opcional
   async function sha256Hex(file) {
     try {
       if (typeof window === 'undefined' || !window.crypto?.subtle) return 'no-hash';
       const buf = await file.arrayBuffer();
       const digest = await window.crypto.subtle.digest('SHA-256', buf);
-      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2,'0')).join('');
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     } catch { return 'no-hash'; }
   }
 
+  // Procesa un archivo (pequeño) en el navegador y guarda metadata en DB
+  async function processLocally(file, fileRow) {
+    try {
+      const name = file.name.toLowerCase();
+      let meta = { type: 'unknown' };
+
+      if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+        const data = await file.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array' });
+        const sheets = wb.SheetNames;
+        const first = wb.Sheets[sheets[0]];
+        const rows = XLSX.utils.sheet_to_json(first, { header: 1, raw: true });
+        const header = (rows[0] || []).map(String);
+        meta = {
+          type: 'excel',
+          sheets,
+          first_sheet: sheets[0],
+          columns: header,
+          rows_count: rows.length - 1
+        };
+      } else if (name.endsWith('.csv')) {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        const header = (lines[0] || '').split(',').map(s => s.trim());
+        meta = {
+          type: 'csv',
+          columns: header,
+          rows_count: Math.max(lines.length - 1, 0)
+        };
+      }
+
+      await supabase.from('files')
+        .update({
+          status: 'processed',
+          processed_at: new Date().toISOString(),
+          meta
+        })
+        .eq('id', fileRow.id);
+
+      setOk('Archivo procesado');
+      // refresca lista
+      const w = items.find(x => x.id === fileRow.workspace_id);
+      if (w) await refreshWorkspaceFiles(w);
+    } catch (e) {
+      setErr('Procesado local falló: ' + (e?.message || e));
+    }
+  }
+
+  // Subir archivo a Storage y registrar en DB, luego procesar localmente
   async function onUpload(w, file) {
     try {
       setErr(''); setOk('');
@@ -104,18 +155,25 @@ export default function WorkspacesPage() {
       if (upErr) { setErr(`Error subiendo archivo: ${upErr.message}`); return; }
 
       const hash = await sha256Hex(file);
-      const { error: dbErr } = await supabase.from('files').insert({
-        workspace_id: w.id,
-        filename: file.name,
-        storage_path: path,
-        bytes: file.size,
-        sha256: hash,
-        status: 'uploaded'
-      });
+      const { data: inserted, error: dbErr } = await supabase
+        .from('files')
+        .insert({
+          workspace_id: w.id,
+          filename: file.name,
+          storage_path: path,
+          bytes: file.size,
+          sha256: hash,
+          status: 'uploaded'
+        })
+        .select()
+        .single();
       if (dbErr) { setErr(`Subido pero NO registrado en DB: ${dbErr.message}`); return; }
 
       setOk('Archivo subido y registrado correctamente');
       await refreshWorkspaceFiles(w);
+
+      // Procesa en cliente (rápido para ficheros pequeños)
+      await processLocally(file, inserted);
     } catch (e) {
       setErr(String(e?.message || e));
     }
@@ -160,19 +218,28 @@ export default function WorkspacesPage() {
 
               <div className="spc" />
               <label>Subir archivo (.xlsx/.xls/.csv): </label>
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={e => onUpload(w, e.target.files?.[0])} />
+              <input type="file" accept=".xlsx,.xls,.csv"
+                     onChange={e => onUpload(w, e.target.files?.[0])} />
 
               <div className="spc" />
               <div><em>Archivos</em></div>
               <ul className="list" style={{marginLeft:0}}>
                 {(fileMap[w.id] || []).map(f => (
                   <li key={f.id} className="card">
-                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12}}>
                       <div>
                         <div><strong>{f.filename}</strong></div>
-                        <small>{fmtBytes(f.bytes)} · {f.status}</small>
+                        <small>{fmtBytes(f.bytes)} · {f.status}</small><br/>
+                        {f.meta && (
+                          <small>
+                            {f.meta.type === 'excel' && `Hojas: ${f.meta.sheets?.join(', ')} · Filas: ${f.meta.rows_count}`}
+                            {f.meta.type === 'csv' && `CSV · Columnas: ${(f.meta.columns||[]).length} · Filas: ${f.meta.rows_count}`}
+                          </small>
+                        )}
                       </div>
-                      <button className="secondary" onClick={() => downloadFile(f)}>Descargar</button>
+                      <div style={{display:'flex', gap:8}}>
+                        <button className="secondary" onClick={() => downloadFile(f)}>Descargar</button>
+                      </div>
                     </div>
                   </li>
                 ))}
