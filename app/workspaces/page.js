@@ -34,12 +34,12 @@ export default function WorkspacesPage() {
   async function loadFiles(wsList) {
     const map = {};
     for (const w of wsList || []) {
-      const { data: files, error } = await supabase
+      const { data: files } = await supabase
         .from('files')
         .select('*')
         .eq('workspace_id', w.id)
         .order('created_at', { ascending: false });
-      map[w.id] = error ? [] : (files || []);
+      map[w.id] = files || [];
     }
     setFileMap(map);
   }
@@ -176,7 +176,9 @@ export default function WorkspacesPage() {
                     </div>
                   </li>
                 ))}
-                {(!fileMap[w.id] || fileMap[w.id].length === 0) && <li className="card">Aún no hay archivos.</li>}
+                {(!fileMap[w.id] || fileMap[w.id].length === 0) && (
+                  <li className="card">Aún no hay archivos.</li>
+                )}
               </ul>
             </li>
           ))}
