@@ -1,8 +1,7 @@
 'use client';
-import { LoginForm } from '../components/AuthForm';
 import { supabase } from '../lib/supabaseClient';
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { LoginForm } from '../components/AuthForm'; // o SignupForm
+
 
 export default function LoginPage() {
   const router = useRouter();
