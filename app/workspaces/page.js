@@ -7,8 +7,8 @@ import * as XLSX from 'xlsx';
 
 export default function WorkspacesPage() {
   const [user, setUser] = useState(null);
-  const [items, setItems] = useState([]);
-  const [fileMap, setFileMap] = useState({});
+  const [items, setItems] = useState([]);       // workspaces
+  const [fileMap, setFileMap] = useState({});   // { [workspaceId]: files[] }
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
@@ -19,10 +19,12 @@ export default function WorkspacesPage() {
       const u = data?.user ?? null;
       setUser(u);
       if (!u) { window.location.href = '/login'; return; }
+
       const { data: ws, error } = await supabase
         .from('workspaces')
         .select('*')
         .order('created_at', { ascending: false });
+
       if (error) setErr(error.message);
       const list = ws || [];
       setItems(list);
@@ -58,16 +60,24 @@ export default function WorkspacesPage() {
     setErr(''); setOk('');
     const name = prompt('Nombre del workspace');
     if (!name) return;
+
     const { data: w, error: e1 } = await supabase
       .from('workspaces')
-      .insert({ name, owner_user_id: (user && user.id) || '' })
+      .insert({ name, owner_user_id: user?.id || '' })
       .select()
       .single();
+
     if (e1) { setErr(e1.message); return; }
-    await supabase.from('members')
+
+    await supabase
+      .from('members')
       .insert({ workspace_id: w.id, user_id: user.id, role: 'owner' });
+
     const { data: ws } = await supabase
-      .from('workspaces').select('*').order('created_at', { ascending: false });
+      .from('workspaces')
+      .select('*')
+      .order('created_at', { ascending: false });
+
     setItems(ws || []);
     await loadFiles(ws || []);
     setOk('Workspace creado');
@@ -78,7 +88,7 @@ export default function WorkspacesPage() {
     window.location.href = '/';
   }
 
-  // Hash opcional
+  // Hash en cliente (si está disponible). Si no, devuelve 'no-hash'
   async function sha256Hex(file) {
     try {
       if (typeof window === 'undefined' || !window.crypto?.subtle) return 'no-hash';
@@ -88,7 +98,7 @@ export default function WorkspacesPage() {
     } catch { return 'no-hash'; }
   }
 
-  // Procesa un archivo (pequeño) en el navegador y guarda metadata en DB
+  // Lee Excel/CSV en el navegador y guarda metadata en la fila de `files`
   async function processLocally(file, fileRow) {
     try {
       const name = file.name.toLowerCase();
@@ -100,13 +110,13 @@ export default function WorkspacesPage() {
         const sheets = wb.SheetNames;
         const first = wb.Sheets[sheets[0]];
         const rows = XLSX.utils.sheet_to_json(first, { header: 1, raw: true });
-        const header = (rows[0] || []).map(String);
+        const header = (rows[0] || []).map(v => String(v ?? ''));
         meta = {
           type: 'excel',
           sheets,
           first_sheet: sheets[0],
           columns: header,
-          rows_count: rows.length - 1
+          rows_count: Math.max((rows.length || 0) - 1, 0)
         };
       } else if (name.endsWith('.csv')) {
         const text = await file.text();
@@ -119,7 +129,7 @@ export default function WorkspacesPage() {
         };
       }
 
-      await supabase.from('files')
+      const { error } = await supabase.from('files')
         .update({
           status: 'processed',
           processed_at: new Date().toISOString(),
@@ -127,8 +137,8 @@ export default function WorkspacesPage() {
         })
         .eq('id', fileRow.id);
 
+      if (error) throw error;
       setOk('Archivo procesado');
-      // refresca lista
       const w = items.find(x => x.id === fileRow.workspace_id);
       if (w) await refreshWorkspaceFiles(w);
     } catch (e) {
@@ -136,24 +146,30 @@ export default function WorkspacesPage() {
     }
   }
 
-  // Subir archivo a Storage y registrar en DB, luego procesar localmente
+  // Subida a Storage + inserción en `files` + procesado local
   async function onUpload(w, file) {
     try {
       setErr(''); setOk('');
       if (!file) return;
+
       const allowed = ['xlsx','xls','csv'];
       const ext = (file.name.split('.').pop() || '').toLowerCase();
-      if (!allowed.includes(ext)) { setErr('Solo se permiten .xlsx, .xls o .csv'); return; }
+      if (!allowed.includes(ext)) {
+        setErr('Solo se permiten .xlsx, .xls o .csv');
+        return;
+      }
 
       const ts = new Date().toISOString().replace(/[:.]/g,'-');
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
       const path = `raw/${user.id}/${w.id}/${ts}-${safeName}`;
 
+      // 1) Subir al bucket privado 'uploads'
       const { error: upErr } = await supabase
         .storage.from('uploads')
         .upload(path, file, { upsert: false });
       if (upErr) { setErr(`Error subiendo archivo: ${upErr.message}`); return; }
 
+      // 2) Insertar fila en `files`
       const hash = await sha256Hex(file);
       const { data: inserted, error: dbErr } = await supabase
         .from('files')
@@ -172,7 +188,7 @@ export default function WorkspacesPage() {
       setOk('Archivo subido y registrado correctamente');
       await refreshWorkspaceFiles(w);
 
-      // Procesa en cliente (rápido para ficheros pequeños)
+      // 3) Procesar en cliente para metadata
       await processLocally(file, inserted);
     } catch (e) {
       setErr(String(e?.message || e));
@@ -218,8 +234,11 @@ export default function WorkspacesPage() {
 
               <div className="spc" />
               <label>Subir archivo (.xlsx/.xls/.csv): </label>
-              <input type="file" accept=".xlsx,.xls,.csv"
-                     onChange={e => onUpload(w, e.target.files?.[0])} />
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={e => onUpload(w, e.target.files?.[0])}
+              />
 
               <div className="spc" />
               <div><em>Archivos</em></div>
@@ -237,9 +256,7 @@ export default function WorkspacesPage() {
                           </small>
                         )}
                       </div>
-                      <div style={{display:'flex', gap:8}}>
-                        <button className="secondary" onClick={() => downloadFile(f)}>Descargar</button>
-                      </div>
+                      <button className="secondary" onClick={() => downloadFile(f)}>Descargar</button>
                     </div>
                   </li>
                 ))}
