@@ -38,6 +38,8 @@ export default function WorkspacesPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
+  const [datasetMap, setDatasetMap] = useState({}); // { [workspaceId]: datasets[] }
+
 
   // -------- init --------
   useEffect(() => {
@@ -55,6 +57,7 @@ export default function WorkspacesPage() {
       const list = ws || [];
       setItems(list);
       await loadFiles(list);
+      await loadDatasets(list);
       setLoading(false);
     }
     init();
@@ -80,6 +83,39 @@ export default function WorkspacesPage() {
       .order('created_at', { ascending: false });
     setFileMap(prev => ({ ...prev, [w.id]: files || [] }));
   }
+  async function loadDatasets(wsList) {
+  const map = {};
+  for (const w of wsList || []) {
+    const { data: rows, error } = await supabase
+      .from('datasets').select('*')
+      .eq('workspace_id', w.id)
+      .order('created_at', { ascending: false });
+    if (error) console.error(error);
+    map[w.id] = rows || [];
+  }
+  setDatasetMap(map);
+}
+
+async function refreshWorkspaceDatasets(w) {
+  const { data: rows } = await supabase
+    .from('datasets').select('*')
+    .eq('workspace_id', w.id)
+    .order('created_at', { ascending: false });
+  setDatasetMap(prev => ({ ...prev, [w.id]: rows || [] }));
+}
+
+async function downloadDataset(row) {
+  try {
+    const { data, error } = await supabase
+      .storage.from('datasets')
+      .createSignedUrl(row.storage_path, 60);
+    if (error) { setErr(error.message); return; }
+    window.open(data.signedUrl, '_blank');
+  } catch (e) {
+    setErr(String(e?.message || e));
+  }
+}
+
 
   // -------- workspaces --------
   async function createWorkspace() {
@@ -213,7 +249,8 @@ export default function WorkspacesPage() {
   }
 
   // -------- ingest (dataset) --------
-  async function ingestFile(f) {
+  async function ingestFile(f) {if (w) await refreshWorkspaceDatasets(w);
+
     try {
       setErr(''); setOk('Ingeriendo…');
       const r = await fetch('/api/ingest', {
@@ -264,20 +301,25 @@ export default function WorkspacesPage() {
               />
 
               <div className="spc" />
-              <div><em>Archivos</em></div>
-              <ul className="list" style={{ marginLeft: 0 }}>
-                {(fileMap[w.id] || []).map(f => (
-                  <li key={f.id} className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                      <div>
-                        <div><strong>{f.filename}</strong></div>
-                        <small>{fmtBytes(f.bytes)} · {f.status}</small><br />
-                        {f.meta && (
-                          <small>
-                            {f.meta.type === 'excel' && `Hojas: ${(f.meta.sheets && f.meta.sheets.length ? f.meta.sheets.join(', ') : f.meta.first_sheet || '-') } · Filas: ${f.meta.rows_count}`}
-                            {f.meta.type === 'csv' && `CSV · Columnas: ${(f.meta.columns || []).length} · Filas: ${f.meta.rows_count}`}
-                          </small>
-                        )}
+<div><em>Datasets</em></div>
+<ul className="list" style={{ marginLeft: 0 }}>
+  {(datasetMap[w.id] || []).map(d => (
+    <li key={d.id} className="card" style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+      <div>
+        <div><strong>{d.filename}</strong></div>
+        <small>{d.storage_path}</small><br/>
+        <small>Filas: {d.rows_count ?? '-'}</small>
+      </div>
+      <div style={{ display:'flex', gap:8 }}>
+        <button className="secondary" onClick={() => downloadDataset(d)}>Descargar CSV</button>
+      </div>
+    </li>
+  ))}
+  {(!datasetMap[w.id] || datasetMap[w.id].length === 0) && (
+    <li className="card">Aún no hay datasets.</li>
+  )}
+</ul>
+
                       </div>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <button className="secondary" onClick={() => togglePreview(f)}>
