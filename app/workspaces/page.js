@@ -82,6 +82,29 @@ export default function WorkspacesPage() {
       return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     } catch { return 'no-hash'; }
   }
+  
+async function ingestFile(f) {
+  try {
+    setErr(''); setOk('Ingeriendo…');
+    const r = await fetch('/api/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_id: f.id,
+        workspace_id: f.workspace_id,
+        storage_path: f.storage_path,
+        filename: f.filename
+      })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'ingest failed');
+    setOk('Ingesta completada');
+    const w = items.find(x => x.id === f.workspace_id);
+    if (w) await refreshWorkspaceFiles(w);
+  } catch (e) {
+    setErr(String(e?.message || e));
+  }
+}
 
   // Guardar preview en DB y en memoria
   async function savePreview(fileId, sheet, columns, rows) {
@@ -235,13 +258,21 @@ export default function WorkspacesPage() {
                           </small>
                         )}
                       </div>
-                      <div style={{display:'flex', gap:8}}>
-                        <button className="secondary" onClick={() => togglePreview(f)}>
-                          {previewMap[f.id] ? 'Ocultar preview' : 'Ver preview'}
-                        </button>
-                        <button className="secondary" onClick={() => downloadFile(f)}>Descargar</button>
-                      </div>
-                    </div>
+                     <div style={{display:'flex', gap:8}}>
+  <button className="secondary" onClick={() => togglePreview(f)}>
+    {previewMap[f.id] ? 'Ocultar preview' : 'Ver preview'}
+  </button>
+  <button className="secondary" onClick={() => downloadFile(f)}>Descargar</button>
+  <button
+    className="secondary"
+    onClick={() => ingestFile(f)}
+    disabled={f.status === 'ingested' || f.status === 'ingesting' || f.status === 'uploaded'}
+    title={f.status === 'ingested' ? 'Ya ingerido' : (f.status === 'uploaded' ? 'Primero procesa el archivo' : 'Convertir a dataset')}
+  >
+    {f.status === 'ingested' ? 'Ingerido' : 'Ingerir a dataset'}
+  </button>
+</div>
+
 
                     {previewMap[f.id] && (
                       <div style={{overflowX:'auto', marginTop:8}}>
