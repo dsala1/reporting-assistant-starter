@@ -5,12 +5,21 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
-// ----------------- Utils -----------------
+// ---------- Utils ----------
 function fmtBytes(n) {
   if (n == null) return '-';
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function sha256Hex(file) {
+  try {
+    if (typeof window === 'undefined' || !window.crypto?.subtle) return 'no-hash';
+    const buf = await file.arrayBuffer();
+    const digest = await window.crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch { return 'no-hash'; }
 }
 
 function parseCsvText(text) {
@@ -29,17 +38,16 @@ function parseExcelArrayBuffer(buf) {
   return { sheets, header, rows: rows.slice(1) };
 }
 
-// ----------------- Page -----------------
+// ---------- Page ----------
 export default function WorkspacesPage() {
   const [user, setUser] = useState(null);
-  const [items, setItems] = useState([]);           // workspaces
-  const [fileMap, setFileMap] = useState({});       // { [workspaceId]: files[] }
-  const [previewMap, setPreviewMap] = useState({}); // { [fileId]: { columns, rows } }
+  const [items, setItems] = useState([]);            // workspaces
+  const [fileMap, setFileMap] = useState({});        // { [workspaceId]: files[] }
+  const [datasetMap, setDatasetMap] = useState({});  // { [workspaceId]: datasets[] }
+  const [previewMap, setPreviewMap] = useState({});  // { [fileId]: { columns, rows } }
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
-  const [datasetMap, setDatasetMap] = useState({}); // { [workspaceId]: datasets[] }
-
 
   // -------- init --------
   useEffect(() => {
@@ -83,39 +91,40 @@ export default function WorkspacesPage() {
       .order('created_at', { ascending: false });
     setFileMap(prev => ({ ...prev, [w.id]: files || [] }));
   }
+
+  // -------- datasets --------
   async function loadDatasets(wsList) {
-  const map = {};
-  for (const w of wsList || []) {
-    const { data: rows, error } = await supabase
+    const map = {};
+    for (const w of wsList || []) {
+      const { data: rows, error } = await supabase
+        .from('datasets').select('*')
+        .eq('workspace_id', w.id)
+        .order('created_at', { ascending: false });
+      if (error) console.error(error);
+      map[w.id] = rows || [];
+    }
+    setDatasetMap(map);
+  }
+
+  async function refreshWorkspaceDatasets(w) {
+    const { data: rows } = await supabase
       .from('datasets').select('*')
       .eq('workspace_id', w.id)
       .order('created_at', { ascending: false });
-    if (error) console.error(error);
-    map[w.id] = rows || [];
+    setDatasetMap(prev => ({ ...prev, [w.id]: rows || [] }));
   }
-  setDatasetMap(map);
-}
 
-async function refreshWorkspaceDatasets(w) {
-  const { data: rows } = await supabase
-    .from('datasets').select('*')
-    .eq('workspace_id', w.id)
-    .order('created_at', { ascending: false });
-  setDatasetMap(prev => ({ ...prev, [w.id]: rows || [] }));
-}
-
-async function downloadDataset(row) {
-  try {
-    const { data, error } = await supabase
-      .storage.from('datasets')
-      .createSignedUrl(row.storage_path, 60);
-    if (error) { setErr(error.message); return; }
-    window.open(data.signedUrl, '_blank');
-  } catch (e) {
-    setErr(String(e?.message || e));
+  async function downloadDataset(row) {
+    try {
+      const { data, error } = await supabase
+        .storage.from('datasets')
+        .createSignedUrl(row.storage_path, 60);
+      if (error) { setErr(error.message); return; }
+      window.open(data.signedUrl, '_blank');
+    } catch (e) {
+      setErr(String(e?.message || e));
+    }
   }
-}
-
 
   // -------- workspaces --------
   async function createWorkspace() {
@@ -132,6 +141,7 @@ async function downloadDataset(row) {
         .from('workspaces').select('*').order('created_at', { ascending: false });
       setItems(ws || []);
       await loadFiles(ws || []);
+      await loadDatasets(ws || []);
       setOk('Workspace creado');
     } catch (e) {
       setErr(String(e?.message || e));
@@ -249,8 +259,7 @@ async function downloadDataset(row) {
   }
 
   // -------- ingest (dataset) --------
-  async function ingestFile(f) {if (w) await refreshWorkspaceDatasets(w);
-
+  async function ingestFile(f) {
     try {
       setErr(''); setOk('Ingeriendo…');
       const r = await fetch('/api/ingest', {
@@ -267,7 +276,10 @@ async function downloadDataset(row) {
       if (!r.ok) throw new Error(j.error || 'ingest failed');
       setOk('Ingesta completada');
       const w = items.find(x => x.id === f.workspace_id);
-      if (w) await refreshWorkspaceFiles(w);
+      if (w) {
+        await refreshWorkspaceFiles(w);
+        await refreshWorkspaceDatasets(w);
+      }
     } catch (e) {
       setErr(String(e?.message || e));
     }
@@ -301,25 +313,20 @@ async function downloadDataset(row) {
               />
 
               <div className="spc" />
-<div><em>Datasets</em></div>
-<ul className="list" style={{ marginLeft: 0 }}>
-  {(datasetMap[w.id] || []).map(d => (
-    <li key={d.id} className="card" style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-      <div>
-        <div><strong>{d.filename}</strong></div>
-        <small>{d.storage_path}</small><br/>
-        <small>Filas: {d.rows_count ?? '-'}</small>
-      </div>
-      <div style={{ display:'flex', gap:8 }}>
-        <button className="secondary" onClick={() => downloadDataset(d)}>Descargar CSV</button>
-      </div>
-    </li>
-  ))}
-  {(!datasetMap[w.id] || datasetMap[w.id].length === 0) && (
-    <li className="card">Aún no hay datasets.</li>
-  )}
-</ul>
-
+              <div><em>Archivos</em></div>
+              <ul className="list" style={{ marginLeft: 0 }}>
+                {(fileMap[w.id] || []).map(f => (
+                  <li key={f.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                      <div>
+                        <div><strong>{f.filename}</strong></div>
+                        <small>{fmtBytes(f.bytes)} · {f.status}</small><br />
+                        {f.meta && (
+                          <small>
+                            {f.meta.type === 'excel' && `Hojas: ${(f.meta.sheets && f.meta.sheets.length ? f.meta.sheets.join(', ') : f.meta.first_sheet || '-') } · Filas: ${f.meta.rows_count}`}
+                            {f.meta.type === 'csv' && `CSV · Columnas: ${(f.meta.columns || []).length} · Filas: ${f.meta.rows_count}`}
+                          </small>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <button className="secondary" onClick={() => togglePreview(f)}>
@@ -367,6 +374,26 @@ async function downloadDataset(row) {
                 ))}
                 {(!fileMap[w.id] || fileMap[w.id].length === 0) && (
                   <li className="card">Aún no hay archivos.</li>
+                )}
+              </ul>
+
+              <div className="spc" />
+              <div><em>Datasets</em></div>
+              <ul className="list" style={{ marginLeft: 0 }}>
+                {(datasetMap[w.id] || []).map(d => (
+                  <li key={d.id} className="card" style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+                    <div>
+                      <div><strong>{d.filename}</strong></div>
+                      <small>{d.storage_path}</small><br/>
+                      <small>Filas: {d.rows_count ?? '-'}</small>
+                    </div>
+                    <div style={{ display:'flex', gap:8 }}>
+                      <button className="secondary" onClick={() => downloadDataset(d)}>Descargar CSV</button>
+                    </div>
+                  </li>
+                ))}
+                {(!datasetMap[w.id] || datasetMap[w.id].length === 0) && (
+                  <li className="card">Aún no hay datasets.</li>
                 )}
               </ul>
             </li>
