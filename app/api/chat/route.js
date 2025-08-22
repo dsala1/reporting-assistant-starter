@@ -1,123 +1,126 @@
 // app/api/chat/route.js
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import OpenAI from "openai";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Supabase admin (server)
+// Admin (server) Supabase client
 const admin = createClient(url, service, { auth: { persistSession: false } });
 
-// --- utils ---
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter(l => l.length > 0);
-  if (!lines.length) return { header: [], rows: [] };
-  const header = lines[0].split(',').map(s => s.trim());
-  const rows = lines.slice(1).map(l => l.split(','));
-  return { header, rows };
+// Forma CSV a partir de filas [{col1:..., col2:...}, ...]
+function rowsToCsv(rows) {
+  if (!rows || !rows.length) return "";
+  const headers = Object.keys(rows[0]);
+  const head = headers.join(",");
+  const body = rows.map(r =>
+    headers.map(h => {
+      const v = r[h] ?? "";
+      const s = String(v).replace(/"/g, '""');
+      return `"${s}"`;
+    }).join(",")
+  ).join("\n");
+  return head + "\n" + body;
 }
 
-function summarizeTable(header, rows, rowCap = 200) {
-  const sample = rows.slice(0, rowCap);
-  const numericIdx = header.map((_, i) => i)
-    .filter(i => sample.some(r => r[i] !== undefined && r[i] !== '' && !Number.isNaN(Number(r[i]))));
+// Intenta obtener preview de un dataset (varias posibles tablas)
+async function fetchDatasetPreview(datasetId) {
+  // 1) dataset_rows (ideal)
+  let rows = null;
+  let error = null;
 
-  const stats = {};
-  for (const i of numericIdx) {
-    let cnt = 0, sum = 0, min = Infinity, max = -Infinity;
-    for (const r of sample) {
-      const v = Number(r[i]); if (Number.isNaN(v)) continue;
-      cnt++; sum += v; if (v < min) min = v; if (v > max) max = v;
+  const try1 = await admin
+    .from("dataset_rows")
+    .select("*")
+    .eq("dataset_id", datasetId)
+    .limit(200);
+
+  if (!try1.error && try1.data && try1.data.length) {
+    rows = try1.data;
+  } else {
+    // 2) files_preview (fallback)
+    const try2 = await admin
+      .from("files_preview")
+      .select("*")
+      .eq("file_id", datasetId)
+      .limit(200);
+    if (!try2.error && try2.data && try2.data.length) {
+      rows = try2.data;
+    } else {
+      // 3) datasets (si guarda csv_text)
+      const try3 = await admin
+        .from("datasets")
+        .select("csv_text")
+        .eq("id", datasetId)
+        .single();
+      if (!try3.error && try3.data?.csv_text) {
+        return try3.data.csv_text;
+      }
+      error = try1.error || try2.error || try3.error;
     }
-    stats[header[i]] = { count: cnt, avg: cnt ? sum / cnt : null, min: isFinite(min) ? min : null, max: isFinite(max) ? max : null };
   }
 
-  return {
-    header,
-    rows_count: rows.length,
-    sample: sample.slice(0, 20),
-    numeric_summary: stats
-  };
+  if (rows && rows.length) return rowsToCsv(rows);
+  if (error && process.env.NODE_ENV !== "production") console.error(error);
+  return "";
 }
 
 export async function POST(req) {
   try {
-    const { conversation_id, workspace_id, message_id, prompt, dataset_ids } = await req.json();
-    if (!conversation_id || !workspace_id || !message_id || !prompt) {
-      return NextResponse.json({ error: 'missing params' }, { status: 400 });
+    const { prompt, workspaceId, datasetIds = [], history = [] } = await req.json();
+
+    // Construimos contexto con previews CSV de datasets
+    let contextParts = [];
+    for (const id of datasetIds) {
+      const csv = await fetchDatasetPreview(id);
+      if (csv) {
+        // recortamos si es excesivo
+        const lines = csv.split(/\r?\n/).slice(0, 250).join("\n");
+        contextParts.push(`Dataset ${id} (primeras filas):\n${lines}`);
+      }
     }
 
-    // conversación pertenece al workspace
-    const { data: conv, error: cErr } = await admin
-      .from('conversations')
-      .select('id, workspace_id')
-      .eq('id', conversation_id)
-      .single();
-    if (cErr || !conv || conv.workspace_id !== workspace_id) {
-      return NextResponse.json({ error: 'conversation/workspace mismatch' }, { status: 403 });
-    }
+    const context = contextParts.join("\n\n");
 
-    // datasets
-    const ids = Array.isArray(dataset_ids) ? dataset_ids : [];
-    const { data: dsRows, error } = await admin
-      .from('datasets')
-      .select('id, filename, storage_path')
-      .in('id', ids)
-      .eq('workspace_id', workspace_id);
-    if (error) throw error;
+    // Mensajes al modelo (estilo chat)
+    const messages = [
+      {
+        role: "system",
+        content:
+          "Eres un analista de datos que escribe en el idioma del usuario. " +
+          "Cuando haya datos en contexto, responde con un breve resumen ejecutivo, " +
+          "una tabla Markdown clara (usa | y separadores) y una sección de conclusiones/acciones. " +
+          "No inventes columnas; trabaja solo con lo que recibes. Si no hay datos útiles, " +
+          "pide un dataset o explica qué falta."
+      },
+      ...history.map(m => ({
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: String(m.content || "")
+      })),
+      {
+        role: "user",
+        content:
+          (context ? `Contexto de datos (CSV):\n${context}\n\n` : "") +
+          `Instrucción del usuario: ${prompt}`
+      }
+    ];
 
-    // descargar y resumir
-    const summaries = [];
-    for (const d of dsRows || []) {
-      const dl = await admin.storage.from('datasets').download(d.storage_path);
-      if (dl.error) throw dl.error;
-      const text = Buffer.from(await dl.data.arrayBuffer()).toString('utf-8');
-      const parsed = parseCsv(text);
-      summaries.push({
-        id: d.id,
-        filename: d.filename,
-        summary: summarizeTable(parsed.header, parsed.rows)
-      });
-    }
-
-    const system = `Eres un analista de datos senior. Responde en el idioma del usuario si se infiere del prompt (por defecto, español).
-- Usa solo los datos adjuntos (resúmenes y muestras).
-- Estructura el informe con: Resumen ejecutivo, Hallazgos, Tablas resumidas (si aplica), Conclusiones y Acciones.
-- No inventes; si algo no está en los datos, dilo.`;
-
-    const context = JSON.stringify(summaries).slice(0, 100000);
-
-    const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    // Modelo recomendado: equilibrado en coste y calidad
     const completion = await openai.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: `Datos adjuntos (resumen JSON): ${context}` },
-        { role: 'user', content: `Instrucción del usuario: ${prompt}` }
-      ],
-      temperature: 0.2
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+      messages
     });
 
-    const answer = completion.choices?.[0]?.message?.content || 'No se generó respuesta.';
-
-    // guarda respuesta
-    const { data: aMsg, error: mErr } = await admin
-      .from('messages')
-      .insert({ conversation_id, user_id: null, role: 'assistant', content: answer })
-      .select()
-      .single();
-    if (mErr) throw mErr;
-
-    // enlaza adjuntos (trazabilidad)
-    if (dsRows && dsRows.length) {
-      const links = dsRows.map(d => ({ message_id, dataset_id: d.id }));
-      await admin.from('message_files').insert(links);
-    }
-
-    return NextResponse.json({ ok: true, message_id: aMsg.id, answer });
-  } catch (e) {
-    return NextResponse.json({ error: e.message || String(e) }, { status: 500 });
+    const answer = completion.choices?.[0]?.message?.content || "Sin respuesta.";
+    return NextResponse.json({ ok: true, answer });
+  } catch (err) {
+    console.error(err);
+    return new NextResponse(
+      typeof err === "string" ? err : (err?.message || "Server error"),
+      { status: 500 }
+    );
   }
 }
