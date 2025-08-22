@@ -1,69 +1,46 @@
 // app/api/upload/route.js
 export const runtime = 'nodejs';
 
+import * as XLSX from 'xlsx';
 import { NextResponse } from 'next/server';
-import * as XLSX from 'xlsx'; // <- IMPORT CORRECTO (no default)
 
-// Utils: CSV -> estructura -> Markdown
-function parseCsv(text) {
-  const lines = (text || '').split(/\r?\n/).filter(l => l.length > 0);
-  if (!lines.length) return { header: [], rows: [] };
-  const header = lines[0].split(',').map(s => s.trim());
-  const rows = lines.slice(1).map(l => l.split(','));
-  return { header, rows };
+// Convierte una hoja (array de objetos) a tabla Markdown (con GFM)
+function aoaToMarkdown(headers, rows, maxRows = 40) {
+  const head = `| ${headers.join(' | ')} |\n| ${headers.map(() => '---').join(' | ')} |`;
+  const body = rows.slice(0, maxRows).map(r => `| ${r.map(v => (v ?? '')).join(' | ')} |`).join('\n');
+  return `${head}\n${body}`;
 }
 
-function toMarkdownTable(header, rows) {
-  if (!header.length) return '';
-  const head = `| ${header.join(' | ')} |`;
-  const sep  = `| ${header.map(() => '---').join(' | ')} |`;
-  const body = rows.map(r => `| ${r.map(c => String(c ?? '')).join(' | ')} |`).join('\n');
-  return [head, sep, body].join('\n');
-}
-
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const form = await req.formData();
-    const files = form.getAll('files');
-
+    const form = await request.formData();
+    const files = form.getAll('files'); // puede venir n archivos
     if (!files || files.length === 0) {
-      return NextResponse.json({ ok: false, error: 'Sin archivos' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: 'No files' }, { status: 400 });
     }
 
-    const previews = [];
+    const previewsMarkdown = [];
 
     for (const file of files) {
-      if (!file) continue;
-      const name = file.name || 'archivo';
-      const lower = name.toLowerCase();
-
-      // Leemos bytes del file
       const buf = Buffer.from(await file.arrayBuffer());
+      const wb = XLSX.read(buf, { type: 'buffer' });
 
-      let csvText = '';
-      if (lower.endsWith('.csv')) {
-        csvText = buf.toString('utf8');
-      } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
-        // Parse seguro con xlsx
-        const wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        csvText = XLSX.utils.sheet_to_csv(ws);
-      } else {
-        previews.push(`### ${name}\n_Archivo no soportado (usa .csv / .xlsx / .xls)_`);
-        continue;
+      const sheets = wb.SheetNames.slice(0, 3); // limita a 3 hojas por archivo (ajustable)
+      for (const sName of sheets) {
+        const ws = wb.Sheets[sName];
+        const json = XLSX.utils.sheet_to_json(ws, { header: 1 }); // array-of-arrays
+        if (!json || json.length === 0) continue;
+
+        const headers = (json[0] || []).map(h => String(h ?? ''));
+        const rows = json.slice(1).map(r => r.map(c => (c ?? '')));
+        const md = aoaToMarkdown(headers, rows);
+
+        previewsMarkdown.push(`### ${file.name} — ${sName}\n\n${md}`);
       }
-
-      const { header, rows } = parseCsv(csvText);
-      const sample = rows.slice(0, 50);
-      const md = toMarkdownTable(header, sample);
-      previews.push(`### ${name}\n${md || '_vacío_'}\n`);
     }
 
-    return NextResponse.json({ ok: true, previewsMarkdown: previews });
-  } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || String(e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: true, previewsMarkdown });
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: String(err?.message || err) }, { status: 500 });
   }
 }
