@@ -1,191 +1,256 @@
-"use client";
+'use client';
 
-import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useEffect, useMemo, useState } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+type Dataset = {
+  id: string;
+  name: string | null;
+  rows: number | null;
+  status: string | null;
+  csv_path: string | null;
+  created_at?: string | null;
+  workspace_id: string;
+};
+
+type Workspace = { id: string; name: string | null };
+
 export default function ChatPage() {
-  const [user, setUser] = useState(null);
-  const [workspace, setWorkspace] = useState(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [wsId, setWsId] = useState<string | null>(null);
 
-  const [datasets, setDatasets] = useState([]); // [{id,name,rows}]
-  const [attached, setAttached] = useState({}); // id -> true/false
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
 
-  const [messages, setMessages] = useState([]); // [{role, content}]
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState("");
+  const [messages, setMessages] = useState<
+    { role: 'user' | 'assistant'; content: string }[]
+  >([{ role: 'assistant', content: '¡Hola! ¿En qué puedo ayudarte hoy? Si tienes algún conjunto de datos adjúntalo y dime qué necesitas analizar.' }]);
 
+  const [input, setInput] = useState('');
+  const selectedIds = useMemo(
+    () => Object.entries(selected).filter(([, v]) => v).map(([k]) => k),
+    [selected]
+  );
+
+  // Carga workspaces en los que soy miembro
   useEffect(() => {
     (async () => {
-      const { data: auth } = await supabase.auth.getUser();
-      setUser(auth?.user ?? null);
-
-      const { data: wss } = await supabase
-        .from("workspaces")
-        .select("*")
-        .order("created_at", { ascending: true })
-        .limit(1);
-
-      if (wss && wss.length) setWorkspace(wss[0]);
+      const { data, error } = await supabase
+        .from('workspaces')
+        .select('id,name')
+        .order('created_at', { ascending: true });
+      if (!error && data) {
+        setWorkspaces(data);
+        if (!wsId && data.length) setWsId(data[0].id);
+      }
     })();
   }, []);
 
+  // Carga datasets “listos para chat”: csv_path no nulo + status válido
   useEffect(() => {
-    if (!workspace) return;
+    if (!wsId) return;
     (async () => {
-      setError("");
+      const { data, error } = await supabase
+        .from('datasets')
+        .select('id,name,rows,status,csv_path,workspace_id,created_at')
+        .eq('workspace_id', wsId)
+        .not('csv_path', 'is', null)
+        .in('status', ['processed', 'ingested', 'ready'])
+        .order('created_at', { ascending: false });
 
-      // 1) datasets (si existe)
-      let list = [];
-      const ds = await supabase
-        .from("datasets")
-        .select("id,name,rows,workspace_id")
-        .eq("workspace_id", workspace.id)
-        .order("created_at", { ascending: false });
-
-      if (!ds.error && ds.data) {
-        list = ds.data;
-      } else {
-        // 2) files (fallback)
-        const fs = await supabase
-          .from("files")
-          .select("id,name,rows,workspace_id,status")
-          .eq("workspace_id", workspace.id)
-          .in("status", ["processed", "ingested"])
-          .order("created_at", { ascending: false });
-        if (!fs.error && fs.data) {
-          list = fs.data.map(f => ({ id: f.id, name: f.name, rows: f.rows ?? null }));
+      if (!error && data) {
+        setDatasets(data);
+        // Por UX: si no hay nada seleccionado aún, marca el último “ingested/processed”
+        const first = data[0]?.id;
+        if (first && selectedIds.length === 0) {
+          setSelected({ [first]: true });
         }
+      } else {
+        setDatasets([]);
       }
-
-      setDatasets(list);
-      const first = list[0]?.id;
-      if (first) setAttached({ [first]: true });
     })();
-  }, [workspace]);
-
-  const attachedIds = useMemo(
-    () => Object.entries(attached).filter(([, v]) => !!v).map(([k]) => k),
-    [attached]
-  );
+  }, [wsId]);
 
   async function send() {
-    if (!input.trim()) return;
-    setSending(true);
-    setError("");
+    const question = input.trim();
+    if (!question) return;
+
+    setMessages((prev) => [...prev, { role: 'user', content: question }]);
+    setInput('');
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Enviamos el workspace y los datasetIds seleccionados
         body: JSON.stringify({
-          prompt: input.trim(),
-          workspaceId: workspace?.id ?? null,
-          datasetIds: attachedIds,
-          history: messages.slice(-10),
+          workspaceId: wsId,
+          datasetIds: selectedIds,
+          message: question,
         }),
       });
 
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      if (!data?.answer) throw new Error("Respuesta vacía del modelo.");
+      if (!res.ok) {
+        const err = await res.text();
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: `Error del servidor: ${err}` },
+        ]);
+        return;
+      }
 
-      setMessages(m => [
-        ...m,
-        { role: "user", content: input.trim() },
-        { role: "assistant", content: data.answer },
+      const json = await res.json();
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: json.answer ?? '(Sin respuesta)' },
       ]);
-      setInput("");
-    } catch (e) {
-      setError(e.message || "Falló el envío.");
-    } finally {
-      setSending(false);
+    } catch (e: any) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `Fallo al contactar el servidor: ${e?.message}` },
+      ]);
     }
   }
 
   return (
-    <>
-      <h1 style={{fontSize: 26, fontWeight: 800, marginTop: 8}}>Chat de reportes</h1>
+    <div style={{ maxWidth: 920, margin: '0 auto', padding: '16px 12px 48px' }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '8px 0 24px' }}>
+        <div style={{ fontWeight: 700 }}>Reporting Assistant</div>
+        <nav style={{ marginLeft: 'auto', display: 'flex', gap: 12 }}>
+          <a href="/chat">Chat</a>
+          <a href="/workspaces">Workspaces</a>
+          <a href="/login">Entrar</a>
+          <a href="/signup">Registro</a>
+        </nav>
+      </header>
 
-      {/* Datos del workspace */}
-      <section className="card">
-        <div style={{opacity:.85, marginBottom: 8}}>
-          <b>Workspace:</b> {workspace?.name || <i>cargando…</i>}
+      <h2 style={{ margin: '8px 0 16px' }}>Chat de reportes</h2>
+
+      {/* Workspace + datasets */}
+      <section style={{ background: '#11151a', border: '1px solid #2a2f36', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <div style={{ opacity: 0.8 }}>Workspace:</div>
+          <select
+            value={wsId ?? ''}
+            onChange={(e) => {
+              setWsId(e.target.value || null);
+              setSelected({});
+            }}
+            style={{ padding: '6px 8px', borderRadius: 6, background: '#0b0e12', border: '1px solid #2a2f36', color: 'white' }}
+          >
+            {workspaces.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name ?? w.id}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div>
-          <b>Adjunta datasets</b>
-          <div style={{ marginTop: 8 }}>
-            {datasets.length === 0 ? (
-              <div style={{ opacity: .7 }}>No hay datasets listos.</div>
-            ) : (
-              datasets.map(d => (
-                <label key={d.id} className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={!!attached[d.id]}
-                    onChange={e => setAttached(a => ({ ...a, [d.id]: e.target.checked }))}
-                  />
-                  <span>{d.name}</span>
-                  {d.rows != null && <small>· filas: {d.rows}</small>}
+        <div style={{ marginTop: 8 }}>
+          <div style={{ opacity: 0.8, marginBottom: 8 }}>Adjunta datasets</div>
+          {datasets.length === 0 ? (
+            <div style={{ opacity: 0.7 }}>No hay datasets listos.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {datasets.map((d) => (
+                <label key={d.id} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  background: '#0b0e12',
+                  border: '1px solid #2a2f36',
+                  borderRadius: 8,
+                  padding: '8px 10px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!selected[d.id]}
+                      onChange={(e) =>
+                        setSelected((prev) => ({ ...prev, [d.id]: e.target.checked }))
+                      }
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600 }}>
+                        {d.name ?? d.id}
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.8 }}>
+                        {d.status ?? '—'} · filas: {d.rows ?? '¿?'}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>
+                    {d.csv_path ? 'CSV listo' : 'CSV pendiente'}
+                  </div>
                 </label>
-              ))
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
       {/* Conversación */}
-      <section className="card">
-        <b>Conversación</b>
-
-        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12, minHeight: 120 }}>
-          {messages.length === 0 ? (
-            <div style={{ opacity: .65 }}>Sin mensajes todavía.</div>
-          ) : (
-            messages.map((m, i) => (
-              <div
-                key={i}
-                className="card"
-                style={{
-                  background: m.role === "user" ? "rgba(255,255,255,.06)" : "var(--panel)",
-                  borderColor: "var(--border)"
-                }}
-              >
-                <div style={{ opacity: .7, fontSize: 12, marginBottom: 6 }}>
-                  {m.role === "user" ? "Tú" : "Asistente"}
-                </div>
-                <div className="markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {m.content}
-                  </ReactMarkdown>
-                </div>
+      <section style={{ background: '#11151a', border: '1px solid #2a2f36', borderRadius: 8, padding: 16 }}>
+        <div style={{ opacity: 0.8, marginBottom: 8 }}>Conversación</div>
+        <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}>
+          {messages.map((m, i) => (
+            <div key={i} style={{
+              background: m.role === 'user' ? '#0f1318' : '#0b0e12',
+              border: '1px solid #2a2f36',
+              borderRadius: 8,
+              padding: '10px 12px'
+            }}>
+              <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>
+                {m.role === 'user' ? 'Tú' : 'Asistente'}
               </div>
-            ))
-          )}
+              <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
+            </div>
+          ))}
         </div>
 
-        {error && <div style={{ marginTop: 10, color: "var(--danger)" }}>{error}</div>}
-
-        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
           <textarea
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={(e) => setInput(e.target.value)}
             placeholder='Escribe tu petición: “analiza ventas por cliente y dame acciones”'
             rows={2}
+            style={{
+              flex: 1,
+              resize: 'vertical',
+              minHeight: 44,
+              borderRadius: 8,
+              border: '1px solid #2a2f36',
+              background: '#0b0e12',
+              color: 'white',
+              padding: 10
+            }}
           />
-          <button onClick={send} disabled={sending} className="btn btn-primary" style={{ minWidth: 110 }}>
-            {sending ? "Enviando…" : "Enviar"}
+          <button
+            onClick={send}
+            style={{
+              height: 44,
+              padding: '0 16px',
+              borderRadius: 8,
+              background: '#2563eb',
+              border: '1px solid #1d4ed8',
+              color: 'white',
+              fontWeight: 600
+            }}
+          >
+            Enviar
           </button>
         </div>
       </section>
-    </>
+
+      <footer style={{ opacity: 0.6, fontSize: 12, textAlign: 'center', marginTop: 28 }}>
+        © 2025 Reporting Assistant
+      </footer>
+    </div>
   );
 }
