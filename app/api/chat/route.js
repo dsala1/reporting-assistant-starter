@@ -10,7 +10,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // Supabase admin (server)
 const admin = createClient(url, service, { auth: { persistSession: false } });
 
-// --- utilidades rápidas ---
+// --- utils ---
 function parseCsv(text) {
   const lines = text.split(/\r?\n/).filter(l => l.length > 0);
   if (!lines.length) return { header: [], rows: [] };
@@ -42,7 +42,6 @@ function summarizeTable(header, rows, rowCap = 200) {
   };
 }
 
-// --- handler ---
 export async function POST(req) {
   try {
     const { conversation_id, workspace_id, message_id, prompt, dataset_ids } = await req.json();
@@ -50,7 +49,7 @@ export async function POST(req) {
       return NextResponse.json({ error: 'missing params' }, { status: 400 });
     }
 
-    // seguridad: conversación debe pertenecer al workspace
+    // conversación pertenece al workspace
     const { data: conv, error: cErr } = await admin
       .from('conversations')
       .select('id, workspace_id')
@@ -60,7 +59,7 @@ export async function POST(req) {
       return NextResponse.json({ error: 'conversation/workspace mismatch' }, { status: 403 });
     }
 
-    // carga datasets seleccionados
+    // datasets
     const ids = Array.isArray(dataset_ids) ? dataset_ids : [];
     const { data: dsRows, error } = await admin
       .from('datasets')
@@ -83,18 +82,14 @@ export async function POST(req) {
       });
     }
 
-    // prompt del sistema: multilenguaje y “modo consultor”
-    const system = `Eres un analista de datos senior. Responde en el IDIOMA del usuario si se puede inferir del prompt, 
-o en español por defecto. 
+    const system = `Eres un analista de datos senior. Responde en el idioma del usuario si se infiere del prompt (por defecto, español).
 - Usa solo los datos adjuntos (resúmenes y muestras).
 - Estructura el informe con: Resumen ejecutivo, Hallazgos, Tablas resumidas (si aplica), Conclusiones y Acciones.
-- Evita inventar: si algo no se puede responder, dilo.
-- Cuando des números, indica periodo y unidad cuando sea razonable.`;
+- No inventes; si algo no está en los datos, dilo.`;
 
-    // compactamos el contexto en JSON (barato)
-    const context = JSON.stringify(summaries).slice(0, 100000); // cap precautorio
+    const context = JSON.stringify(summaries).slice(0, 100000);
 
-    const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'; // modelo por defecto
+    const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const completion = await openai.chat.completions.create({
       model: MODEL,
       messages: [
@@ -107,20 +102,15 @@ o en español por defecto.
 
     const answer = completion.choices?.[0]?.message?.content || 'No se generó respuesta.';
 
-    // guardamos respuesta en messages
+    // guarda respuesta
     const { data: aMsg, error: mErr } = await admin
       .from('messages')
-      .insert({
-        conversation_id,
-        user_id: null,
-        role: 'assistant',
-        content: answer
-      })
+      .insert({ conversation_id, user_id: null, role: 'assistant', content: answer })
       .select()
       .single();
     if (mErr) throw mErr;
 
-    // enlazamos los adjuntos a ese intercambio (para trazabilidad)
+    // enlaza adjuntos (trazabilidad)
     if (dsRows && dsRows.length) {
       const links = dsRows.map(d => ({ message_id, dataset_id: d.id }));
       await admin.from('message_files').insert(links);
@@ -128,7 +118,6 @@ o en español por defecto.
 
     return NextResponse.json({ ok: true, message_id: aMsg.id, answer });
   } catch (e) {
-    // errores típicos: 401 key mala, 429 rate-limit, 404 modelo desconocido
     return NextResponse.json({ error: e.message || String(e) }, { status: 500 });
   }
 }
