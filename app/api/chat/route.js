@@ -1,148 +1,125 @@
+// app/api/chat/route.js
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
-// Config
+// Modelo por defecto (ajústalo si quieres)
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// Nombre del bucket donde viven los CSVs exportados
 const FILES_BUCKET = process.env.NEXT_PUBLIC_FILES_BUCKET || 'uploads';
 
-const URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
+// Supabase (server, con Service Role)
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const service = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const admin = createClient(url, service, { auth: { persistSession: false } });
 
-if (!URL || !SERVICE_KEY) {
-  console.warn('Faltan credenciales de Supabase en el entorno del servidor.');
-}
-if (!OPENAI_KEY) {
-  console.warn('Falta OPENAI_API_KEY en el entorno.');
-}
+// OpenAI
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
 
-const admin =
-  URL && SERVICE_KEY ? createClient(URL, SERVICE_KEY, { auth: { persistSession: false } }) : null;
-const openai = OPENAI_KEY ? new OpenAI({ apiKey: OPENAI_KEY }) : null;
-
-// -------- CSV utils sencillos --------
-function splitCsvLine(line) {
-  return line.split(',').map((c) => c.trim());
-}
-
+// ----------------- utils muy simples -----------------
 function parseCsv(text) {
-  const lines = (text || '').split(/\r?\n/).filter((l) => l.length > 0);
+  // Soporta comas simples; si necesitas comillas/escape, mete un parser real
+  const lines = text.split(/\r?\n/).filter(l => l.length > 0);
   if (!lines.length) return { header: [], rows: [] };
-  const header = splitCsvLine(lines[0]);
-  const rows = lines.slice(1).map(splitCsvLine);
+  const header = lines[0].split(',').map(s => s.trim());
+  const rows = lines.slice(1).map(l => l.split(','));
   return { header, rows };
 }
 
-function sampleRows(header, rows, n = 12) {
-  return rows.slice(0, n).map((r) => {
-    const obj = {};
-    header.forEach((h, i) => (obj[h || `col_${i}`] = r[i]));
-    return obj;
-  });
+function sampleRows(rows, n = 40) {
+  return rows.slice(0, Math.max(1, Math.min(n, rows.length)));
 }
 
-// Lee un archivo de Storage y devuelve texto (vale para Node o Browser)
-async function readStorageFileAsText(bucket, path) {
-  const { data, error } = await admin.storage.from(bucket).download(path);
-  if (error || !data) throw error || new Error('File download failed');
-
-  // En navegador: Blob tiene .text(); en Node: viene como ReadableStream/Bufferizable
-  if (typeof data.text === 'function') {
-    return await data.text();
-  }
-  if (typeof data.arrayBuffer === 'function') {
-    const buf = Buffer.from(await data.arrayBuffer());
-    return buf.toString('utf-8');
-  }
-  // Node ReadableStream
-  if (typeof data.getReader === 'function') {
-    const reader = data.getReader();
-    const chunks = [];
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(Buffer.from(value));
-    }
-    return Buffer.concat(chunks).toString('utf-8');
-  }
-
-  // Último recurso: intentar toString
-  return String(data);
+function toMarkdownTable(header, rows) {
+  if (!header.length) return '';
+  const head = `| ${header.join(' | ')} |`;
+  const sep = `| ${header.map(() => '---').join(' | ')} |`;
+  const body = rows.map(r => `| ${r.map(c => String(c ?? '')).join(' | ')} |`).join('\n');
+  return [head, sep, body].join('\n');
 }
+// -----------------------------------------------------
 
 export async function POST(req) {
   try {
-    if (!admin) return new NextResponse('Server misconfigured (Supabase)', { status: 500 });
-    if (!openai) return new NextResponse('Server misconfigured (OpenAI)', { status: 500 });
-
     const body = await req.json();
-    const { workspaceId, datasetIds, message } = body || {};
-    if (!workspaceId) return new NextResponse('Missing workspaceId', { status: 400 });
+    const {
+      workspaceId,
+      fileIds = [],
+      prompt = '',
+      messages = [],
+    } = body || {};
 
-    const ids = Array.isArray(datasetIds) ? datasetIds : [];
-
-    // Busca datasets seleccionados con csv_path
-    let datasets = [];
-    if (ids.length) {
-      const { data, error } = await admin
-        .from('datasets')
-        .select('id,name,workspace_id,csv_path')
-        .in('id', ids)
-        .eq('workspace_id', workspaceId)
-        .not('csv_path', 'is', null);
-
-      if (error) throw error;
-      datasets = data || [];
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'workspaceId requerido' }, { status: 400 });
     }
 
-    // Descarga CSVs y construye resumenes
-    const summaries = [];
-    for (const d of datasets) {
+    // 1) Busca datasets listos (ready = true) del workspace
+    const { data: ds, error: dsErr } = await admin
+      .from('datasets')
+      .select('id,name,csv_path,ready')
+      .eq('workspace_id', workspaceId)
+      .in('id', fileIds.length ? fileIds : ['00000000-0000-0000-0000-000000000000'])
+      .eq('ready', true);
+
+    if (dsErr) {
+      return NextResponse.json({ error: `Error datasets: ${dsErr.message}` }, { status: 500 });
+    }
+
+    if (!ds || ds.length === 0) {
+      return NextResponse.json({ error: 'No hay datasets listos para analizar.' }, { status: 200 });
+    }
+
+    // 2) Descarga CSVs y crea previews Markdown
+    let previews = [];
+    for (const d of ds) {
       if (!d.csv_path) continue;
+      const { data: file, error: dlErr } = await admin.storage
+        .from(FILES_BUCKET)
+        .download(d.csv_path);
 
-      // lee el CSV como texto (funciona en Vercel)
-      let text = await readStorageFileAsText(FILES_BUCKET, d.csv_path);
-
-      // limita a ~50KB para prompt
-      if (text.length > 50_000) text = text.slice(0, 50_000);
-
+      if (dlErr) {
+        previews.push(`- ${d.name || d.id}: no se pudo descargar (${dlErr.message})`);
+        continue;
+      }
+      const text = await file.text();
       const { header, rows } = parseCsv(text);
-      const preview = sampleRows(header, rows, 12);
-
-      summaries.push({
-        id: d.id,
-        name: d.name || d.id,
-        columns: header,
-        preview,
-        totalRows: rows.length,
-      });
+      const sample = sampleRows(rows, 20);
+      const md = toMarkdownTable(header, sample);
+      previews.push(`### ${d.name || d.id}\n${md || '_vacío_'}\n`);
     }
 
-    const context = summaries.length
-      ? `Tienes acceso a ${summaries.length} dataset(s). Para cada uno te doy columnas y unas filas de muestra en JSON.
-${JSON.stringify(summaries, null, 2)}`
-      : 'No hay datasets adjuntos. Responde en base a la pregunta solo.';
+    const system = [
+      'Eres un analista senior de datos.',
+      'Recibirás previews (muestras) de uno o varios datasets en formato tabla Markdown.',
+      'Responde en español, claro y accionable.',
+      'Si el usuario lo pide, genera tablas en Markdown y, si corresponde, un CSV sintetizado.',
+      'Sé muy concreto en insights y recomendaciones de negocio.',
+    ].join(' ');
 
-    const system = `Eres un analista de datos senior. Responde en español con tablas Markdown limpias y conclusiones accionables.
-- Usa solo las columnas provistas.
-- Si calculas ratios, muéstralos con 2 decimales.
-- Cuando corresponda, añade recomendaciones claras.`;
+    const userContent = [
+      '## Datasets (muestras)',
+      previews.join('\n\n'),
+      '',
+      '## Petición del usuario',
+      prompt || '(sin prompt adicional)',
+    ].join('\n');
+
+    const chat = [
+      { role: 'system', content: system },
+      ...(Array.isArray(messages) ? messages : []),
+      { role: 'user', content: userContent },
+    ];
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: `${context}\n\nPregunta del usuario: ${message}` },
-      ],
-      temperature: 0.2,
+      messages: chat,
+      temperature: 0.3,
     });
 
-    const answer = completion?.choices?.[0]?.message?.content ?? 'No he podido generar respuesta.';
+    const answer = completion.choices?.[0]?.message?.content || '(sin respuesta)';
     return NextResponse.json({ ok: true, answer });
-  } catch (e) {
-    console.error(e);
-    return new NextResponse(e?.message || 'Unexpected error', { status: 500 });
+
+  } catch (err) {
+    return NextResponse.json({ error: String(err?.message || err) }, { status: 500 });
   }
 }
