@@ -8,20 +8,27 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 );
 
+// Estilos inline (por si no hay Tailwind)
+const wrap = { minHeight: '100vh', background: '#0b0e13', color: '#e5e7eb' };
+const container = { maxWidth: 900, margin: '0 auto', padding: '24px' };
+const card = { border: '1px solid rgba(255,255,255,.1)', background: 'rgba(255,255,255,.05)', borderRadius: 12, padding: 16 };
+const h1 = { fontSize: 20, fontWeight: 600, margin: '0 0 16px' };
+const label = { fontSize: 13, color: 'rgba(255,255,255,.8)' };
+const list = { marginTop: 8, marginBottom: 8, paddingLeft: 16 };
+const msgUser = { background: 'rgba(255,255,255,.12)', borderRadius: 8, padding: 12, fontSize: 14 };
+const msgAsst = { background: 'rgba(255,255,255,.06)', borderRadius: 8, padding: 12, fontSize: 14, border: '1px solid rgba(255,255,255,.1)' };
+const inputArea = { display: 'flex', gap: 8, alignItems: 'stretch', marginTop: 12 };
+const textarea = { flex: 1, background: 'rgba(0,0,0,.3)', color: '#e5e7eb', border: '1px solid rgba(255,255,255,.1)', borderRadius: 6, padding: 10, fontSize: 14 };
+const button = { background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 14px', fontWeight: 600, cursor: 'pointer' };
+
 export default function ChatPage() {
   const [workspaceId, setWorkspaceId] = useState(null);
-  const [datasets, setDatasets] = useState([]);
-  const [checked, setChecked] = useState({});
   const [messages, setMessages] = useState([
-    {
-      role: 'assistant',
-      content:
-        '¡Hola! ¿En qué puedo ayudarte hoy? Si tienes uno o varios datasets (CSV) en tu workspace, márcalos y dime qué necesitas analizar.',
-    },
+    { role: 'assistant', content: '¡Hola! Sube 1..N CSV/XLSX y dime qué necesitas analizar.' }
   ]);
   const [input, setInput] = useState('');
+  const [files, setFiles] = useState([]);
 
-  // Carga primer workspace del usuario y sus datasets
   useEffect(() => {
     (async () => {
       const { data: ws } = await supabase
@@ -29,154 +36,110 @@ export default function ChatPage() {
         .select('id')
         .order('created_at', { ascending: true })
         .limit(1);
-
-      const wid = ws?.[0]?.id || null;
-      setWorkspaceId(wid);
-
-      if (!wid) {
-        setDatasets([]);
-        return;
-      }
-
-      const { data: ds } = await supabase
-        .from('datasets')
-        .select('id,name,ready,rows_count,created_at')
-        .eq('workspace_id', wid)
-        .order('created_at', { ascending: false });
-
-      setDatasets(ds || []);
+      setWorkspaceId(ws?.[0]?.id || null);
     })();
   }, []);
 
-  const toggle = (id) => {
-    setChecked((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
+  function onFile(e) {
+    const arr = Array.from(e.target.files || []);
+    setFiles(arr);
+  }
 
-  const send = async () => {
-    if (!workspaceId) {
-      setMessages((m) => [...m, { role: 'assistant', content: 'No encuentro tu workspace.' }]);
-      return;
-    }
-    const fileIds = Object.entries(checked)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-
-    setMessages((m) => [...m, { role: 'user', content: input }]);
+  async function send() {
+    // Añadimos el prompt del usuario a la conversación
+    setMessages(m => [...m, { role: 'user', content: input || '(sin prompt)' }]);
+    const currentInput = input;
     setInput('');
 
-    const res = await fetch('/api/chat', {
+    let previewsMarkdown = [];
+
+    if (files.length > 0) {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      const json = await res.json();
+      if (!json.ok) {
+        setMessages(m => [...m, { role: 'assistant', content: `Error al subir archivos: ${json.error}` }]);
+        return;
+      }
+      previewsMarkdown = json.previewsMarkdown || [];
+    }
+
+    const res2 = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        workspaceId,
-        fileIds,
-        prompt: input,
-        messages,
+        workspaceId,                // por si luego quieres volver a datasets
+        previewsMarkdown,           // previews generadas del upload
+        prompt: currentInput,
+        messages
       }),
     });
-
-    const json = await res.json();
-    if (!json.ok) {
-      setMessages((m) => [...m, { role: 'assistant', content: `Error: ${json.error}` }]);
+    const j = await res2.json();
+    if (!j.ok) {
+      setMessages(m => [...m, { role: 'assistant', content: `Error: ${j.error}` }]);
       return;
     }
-    setMessages((m) => [...m, { role: 'assistant', content: json.answer }]);
-  };
+    setMessages(m => [...m, { role: 'assistant', content: j.answer }]);
+  }
 
   return (
-    <div className="min-h-screen bg-[#0b0e13] text-gray-100">
-      <header className="border-b border-white/10">
-        <div className="mx-auto max-w-5xl px-4 py-4 flex items-center justify-between">
-          <div className="font-semibold">Reporting Assistant</div>
-          <nav className="text-sm space-x-4">
-            <a href="/chat" className="text-white/80 hover:text-white">Chat</a>
-            <a href="/workspaces" className="text-white/60 hover:text-white">Workspaces</a>
-            <a href="/login" className="text-white/60 hover:text-white">Entrar</a>
-          </nav>
+    <div style={wrap}>
+      <div style={{ borderBottom: '1px solid rgba(255,255,255,.1)' }}>
+        <div style={{ ...container, paddingTop: 12, paddingBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ fontWeight: 600 }}>Reporting Assistant</div>
+          <div style={{ fontSize: 13 }}>
+            <a href="/chat" style={{ color: '#e5e7eb' }}>Chat</a>
+            <span style={{ opacity: .5 }}> · </span>
+            <a href="/workspaces" style={{ color: 'rgba(255,255,255,.7)' }}>Workspaces</a>
+            <span style={{ opacity: .5 }}> · </span>
+            <a href="/login" style={{ color: 'rgba(255,255,255,.7)' }}>Entrar</a>
+          </div>
         </div>
-      </header>
+      </div>
 
-      <main className="mx-auto max-w-5xl px-4 py-8">
-        <h1 className="text-xl font-semibold mb-4">Chat de reportes</h1>
+      <main style={container}>
+        <h1 style={h1}>Chat de reportes</h1>
 
-        <section className="rounded-xl border border-white/10 bg-white/5 p-4 mb-6">
-          <div className="text-sm text-white/80">
-            <div className="mb-2">
-              <span className="font-medium">Workspace:</span>{' '}
-              {workspaceId ? workspaceId : '—'}
-            </div>
-            <div>
-              <div className="font-medium mb-2">Adjunta datasets</div>
-              {datasets.length === 0 ? (
-                <div className="text-white/60">No hay datasets listos.</div>
-              ) : (
-                <ul className="space-y-2">
-                  {datasets.map((d) => (
-                    <li key={d.id} className="flex items-center justify-between gap-3">
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          disabled={!d.ready}
-                          checked={!!checked[d.id]}
-                          onChange={() => toggle(d.id)}
-                        />
-                        <span className="text-sm">
-                          {d.name || d.id}{' '}
-                          {d.ready ? (
-                            <span className="text-green-400">(listo)</span>
-                          ) : (
-                            <span className="text-yellow-400">(procesando)</span>
-                          )}
-                        </span>
-                      </label>
-                      {typeof d.rows_count === 'number' ? (
-                        <span className="text-xs text-white/50">{d.rows_count} filas</span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+        <section style={{ ...card, marginBottom: 16 }}>
+          <div style={label}><b>Workspace:</b> {workspaceId || '—'}</div>
+
+          <div style={{ marginTop: 10 }}>
+            <div style={label}><b>Adjunta archivos</b> (.csv, .xls, .xlsx)</div>
+            <input type="file" multiple accept=".csv,.xls,.xlsx" onChange={onFile} style={{ marginTop: 8 }} />
+            {files.length > 0 && (
+              <ul style={list}>
+                {files.map((f, i) => <li key={i} style={{ fontSize: 13, color: 'rgba(255,255,255,.8)' }}>{f.name}</li>)}
+              </ul>
+            )}
           </div>
         </section>
 
-        <section className="rounded-xl border border-white/10 bg-white/5 p-4">
-          <div className="text-sm font-medium mb-2">Conversación</div>
-          <div className="space-y-3 mb-4 max-h-[360px] overflow-auto">
+        <section style={card}>
+          <div style={{ ...label, marginBottom: 8 }}>Conversación</div>
+
+          <div style={{ display: 'grid', gap: 8, maxHeight: 360, overflow: 'auto', marginBottom: 8 }}>
             {messages.map((m, i) => (
-              <div
-                key={i}
-                className={`rounded-lg p-3 text-sm ${
-                  m.role === 'user'
-                    ? 'bg-white/10'
-                    : 'bg-white/5 border border-white/10'
-                }`}
-              >
-                {m.content}
-              </div>
+              <div key={i} style={m.role === 'user' ? msgUser : msgAsst}>{m.content}</div>
             ))}
           </div>
-          <div className="flex items-center gap-2">
+
+          <div style={inputArea}>
             <textarea
-              className="flex-1 rounded-md bg-black/30 border border-white/10 p-3 text-sm"
+              style={textarea}
               rows={2}
               placeholder='Escribe tu petición: “analiza ventas por cliente y dame acciones”'
               value={input}
               onChange={(e) => setInput(e.target.value)}
             />
-            <button
-              onClick={send}
-              className="rounded-md bg-blue-600 hover:bg-blue-500 px-4 py-2 text-sm font-medium"
-            >
-              Enviar
-            </button>
+            <button style={button} onClick={send}>Enviar</button>
           </div>
         </section>
-      </main>
 
-      <footer className="mx-auto max-w-5xl px-4 py-10 text-center text-xs text-white/40">
-        © 2025 Reporting Assistant
-      </footer>
+        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,.4)', fontSize: 12, marginTop: 32 }}>
+          © 2025 Reporting Assistant
+        </div>
+      </main>
     </div>
   );
 }
