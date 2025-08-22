@@ -1,47 +1,90 @@
-// app/api/chat/route.js
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
+// Config
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const FILES_BUCKET = process.env.NEXT_PUBLIC_FILES_BUCKET || 'uploads'; // ← ajusta si tu CSV vive en otro bucket
+const FILES_BUCKET = process.env.NEXT_PUBLIC_FILES_BUCKET || 'uploads';
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const service = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 
-const admin = createClient(url, service, { auth: { persistSession: false } });
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+if (!URL || !SERVICE_KEY) {
+  console.warn('Faltan credenciales de Supabase en el entorno del servidor.');
+}
+if (!OPENAI_KEY) {
+  console.warn('Falta OPENAI_API_KEY en el entorno.');
+}
 
-// --- CSV utils muy simples (suficiente para resumen)
+const admin =
+  URL && SERVICE_KEY ? createClient(URL, SERVICE_KEY, { auth: { persistSession: false } }) : null;
+const openai = OPENAI_KEY ? new OpenAI({ apiKey: OPENAI_KEY }) : null;
+
+// -------- CSV utils sencillos --------
+function splitCsvLine(line) {
+  return line.split(',').map((c) => c.trim());
+}
+
 function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+  const lines = (text || '').split(/\r?\n/).filter((l) => l.length > 0);
   if (!lines.length) return { header: [], rows: [] };
   const header = splitCsvLine(lines[0]);
   const rows = lines.slice(1).map(splitCsvLine);
   return { header, rows };
 }
-function splitCsvLine(line) {
-  // separador simplón por comas; si tus CSVs tienen comillas/escapes complejos, podemos mejorar después
-  return line.split(',').map(c => c.trim());
-}
-function sampleRows(header, rows, n = 10) {
-  return rows.slice(0, n).map(r => {
+
+function sampleRows(header, rows, n = 12) {
+  return rows.slice(0, n).map((r) => {
     const obj = {};
     header.forEach((h, i) => (obj[h || `col_${i}`] = r[i]));
     return obj;
   });
 }
 
+// Lee un archivo de Storage y devuelve texto (vale para Node o Browser)
+async function readStorageFileAsText(bucket, path) {
+  const { data, error } = await admin.storage.from(bucket).download(path);
+  if (error || !data) throw error || new Error('File download failed');
+
+  // En navegador: Blob tiene .text(); en Node: viene como ReadableStream/Bufferizable
+  if (typeof data.text === 'function') {
+    return await data.text();
+  }
+  if (typeof data.arrayBuffer === 'function') {
+    const buf = Buffer.from(await data.arrayBuffer());
+    return buf.toString('utf-8');
+  }
+  // Node ReadableStream
+  if (typeof data.getReader === 'function') {
+    const reader = data.getReader();
+    const chunks = [];
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks).toString('utf-8');
+  }
+
+  // Último recurso: intentar toString
+  return String(data);
+}
+
 export async function POST(req) {
   try {
+    if (!admin) return new NextResponse('Server misconfigured (Supabase)', { status: 500 });
+    if (!openai) return new NextResponse('Server misconfigured (OpenAI)', { status: 500 });
+
     const body = await req.json();
     const { workspaceId, datasetIds, message } = body || {};
     if (!workspaceId) return new NextResponse('Missing workspaceId', { status: 400 });
 
     const ids = Array.isArray(datasetIds) ? datasetIds : [];
 
-    // Cargamos datasets seleccionados con csv_path
-    let ds = [];
+    // Busca datasets seleccionados con csv_path
+    let datasets = [];
     if (ids.length) {
       const { data, error } = await admin
         .from('datasets')
@@ -51,64 +94,55 @@ export async function POST(req) {
         .not('csv_path', 'is', null);
 
       if (error) throw error;
-      ds = data || [];
+      datasets = data || [];
     }
 
-    // Descargamos y resumimos cada CSV (hasta 50KB cada uno por seguridad)
+    // Descarga CSVs y construye resumenes
     const summaries = [];
-    for (const d of ds) {
-      const path = d.csv_path;
-      if (!path) continue;
+    for (const d of datasets) {
+      if (!d.csv_path) continue;
 
-      const file = await admin.storage.from(FILES_BUCKET).download(path);
-      if (!file || !(file instanceof Blob)) continue;
+      // lee el CSV como texto (funciona en Vercel)
+      let text = await readStorageFileAsText(FILES_BUCKET, d.csv_path);
 
-      // Limita tamaño (protección)
-      const blob = file.size > 50000 ? file.slice(0, 50000) : file;
-      const text = await blob.text();
+      // limita a ~50KB para prompt
+      if (text.length > 50_000) text = text.slice(0, 50_000);
 
       const { header, rows } = parseCsv(text);
-      const sample = sampleRows(header, rows, 12);
+      const preview = sampleRows(header, rows, 12);
 
       summaries.push({
         id: d.id,
         name: d.name || d.id,
         columns: header,
-        preview: sample,
-        totalRows: rows.length
+        preview,
+        totalRows: rows.length,
       });
     }
 
-    // Montamos prompt: contexto con tablas disponibles + pregunta del usuario
     const context = summaries.length
       ? `Tienes acceso a ${summaries.length} dataset(s). Para cada uno te doy columnas y unas filas de muestra en JSON.
 ${JSON.stringify(summaries, null, 2)}`
       : 'No hay datasets adjuntos. Responde en base a la pregunta solo.';
 
-    const sys = `Eres un analista de datos. Responde de forma clara, con tablas y conclusiones accionables en español. 
-- Si hay datasets, úsalos exclusivamente para responder; si faltan columnas o hay ambigüedad, pide precisión. 
-- Cuando hagas tablas, usa Markdown con encabezados y alinea correctamente.
-- Si calculas ratios (beneficio/income, etc.), indícalo y muestra 2 decimales.`;
+    const system = `Eres un analista de datos senior. Responde en español con tablas Markdown limpias y conclusiones accionables.
+- Usa solo las columnas provistas.
+- Si calculas ratios, muéstralos con 2 decimales.
+- Cuando corresponda, añade recomendaciones claras.`;
 
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       messages: [
-        { role: 'system', content: sys },
+        { role: 'system', content: system },
         { role: 'user', content: `${context}\n\nPregunta del usuario: ${message}` },
       ],
       temperature: 0.2,
     });
 
-    const answer =
-      completion?.choices?.[0]?.message?.content ??
-      'No he podido generar respuesta.';
-
+    const answer = completion?.choices?.[0]?.message?.content ?? 'No he podido generar respuesta.';
     return NextResponse.json({ ok: true, answer });
   } catch (e) {
     console.error(e);
-    return new NextResponse(
-      e?.message || 'Unexpected error',
-      { status: 500 }
-    );
+    return new NextResponse(e?.message || 'Unexpected error', { status: 500 });
   }
 }
