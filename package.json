@@ -12,7 +12,9 @@
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "@supabase/supabase-js": "^2.43.4",
+    "openai": "^4.56.0",
     "xlsx": "^0.18.5",
-    "openai": "^4.56.0"
+    "react-markdown": "^9.0.3",
+    "remark-gfm": "^4.0.0"
   }
 }
