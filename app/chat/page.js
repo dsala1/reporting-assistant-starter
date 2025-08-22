@@ -1,145 +1,198 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-);
-
-// Estilos inline (por si no hay Tailwind)
-const wrap = { minHeight: '100vh', background: '#0b0e13', color: '#e5e7eb' };
-const container = { maxWidth: 900, margin: '0 auto', padding: '24px' };
-const card = { border: '1px solid rgba(255,255,255,.1)', background: 'rgba(255,255,255,.05)', borderRadius: 12, padding: 16 };
-const h1 = { fontSize: 20, fontWeight: 600, margin: '0 0 16px' };
-const label = { fontSize: 13, color: 'rgba(255,255,255,.8)' };
-const list = { marginTop: 8, marginBottom: 8, paddingLeft: 16 };
-const msgUser = { background: 'rgba(255,255,255,.12)', borderRadius: 8, padding: 12, fontSize: 14 };
-const msgAsst = { background: 'rgba(255,255,255,.06)', borderRadius: 8, padding: 12, fontSize: 14, border: '1px solid rgba(255,255,255,.1)' };
-const inputArea = { display: 'flex', gap: 8, alignItems: 'stretch', marginTop: 12 };
-const textarea = { flex: 1, background: 'rgba(0,0,0,.3)', color: '#e5e7eb', border: '1px solid rgba(255,255,255,.1)', borderRadius: 6, padding: 10, fontSize: 14 };
-const button = { background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '10px 14px', fontWeight: 600, cursor: 'pointer' };
+import { useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 export default function ChatPage() {
-  const [workspaceId, setWorkspaceId] = useState(null);
+  // Estado básico del chat
+  const [filesPreview, setFilesPreview] = useState([]); // array de markdown (uno por archivo)
+  const [filesList, setFilesList] = useState([]); // nombres de archivos adjuntos
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: '¡Hola! Sube 1..N CSV/XLSX y dime qué necesitas analizar.' }
+    {
+      role: 'assistant',
+      content:
+        '¡Hola! Sube 1..N CSV/XLSX desde el botón de arriba y dime qué necesitas analizar.',
+    },
   ]);
   const [input, setInput] = useState('');
-  const [files, setFiles] = useState([]);
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef(null);
 
+  // Autoscroll al final cuando hay cambios
   useEffect(() => {
-    (async () => {
-      const { data: ws } = await supabase
-        .from('workspaces')
-        .select('id')
-        .order('created_at', { ascending: true })
-        .limit(1);
-      setWorkspaceId(ws?.[0]?.id || null);
-    })();
-  }, []);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  function onFile(e) {
-    const arr = Array.from(e.target.files || []);
-    setFiles(arr);
+  // Subida de archivos al endpoint /api/upload
+  async function handleFilesChange(e) {
+    try {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+
+      const form = new FormData();
+      files.forEach((f) => form.append('files', f));
+
+      const res = await fetch('/api/upload', { method: 'POST', body: form });
+      const data = await res.json();
+
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || 'Error subiendo archivos');
+      }
+
+      // Guardamos previews markdown y nombres para chips
+      setFilesPreview(data.previewsMarkdown || []);
+      setFilesList(files.map((f) => f.name));
+
+      // Mensaje del asistente confirmando adjuntos
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `He recibido ${files.length} archivo${
+            files.length > 1 ? 's' : ''
+          }. Cuando me digas qué buscas, los analizo.`,
+        },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `⚠️ Error al subir archivos: ${err.message}` },
+      ]);
+    } finally {
+      // Limpia el input de archivos para permitir volver a subir los mismos si se quiere
+      e.target.value = '';
+    }
   }
 
-  async function send() {
-    // Añadimos el prompt del usuario a la conversación
-    setMessages(m => [...m, { role: 'user', content: input || '(sin prompt)' }]);
-    const currentInput = input;
+  // Enviar prompt al backend /api/chat con las previews
+  async function handleSend() {
+    const prompt = (input || '').trim();
+    if (!prompt || sending) return;
+
+    // pinta el mensaje del usuario
+    setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
     setInput('');
+    setSending(true);
 
-    let previewsMarkdown = [];
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Mandamos el prompt y las previews (markdown) al servidor
+        body: JSON.stringify({
+          prompt,
+          previews: filesPreview, // <- deja esto así; tu route ya lo estaba usando
+        }),
+      });
 
-    if (files.length > 0) {
-      const fd = new FormData();
-      for (const f of files) fd.append('files', f);
-      const res = await fetch('/api/upload', { method: 'POST', body: fd });
-      const json = await res.json();
-      if (!json.ok) {
-        setMessages(m => [...m, { role: 'assistant', content: `Error al subir archivos: ${json.error}` }]);
-        return;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Error generando respuesta');
       }
-      previewsMarkdown = json.previewsMarkdown || [];
-    }
 
-    const res2 = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        workspaceId,                // por si luego quieres volver a datasets
-        previewsMarkdown,           // previews generadas del upload
-        prompt: currentInput,
-        messages
-      }),
-    });
-    const j = await res2.json();
-    if (!j.ok) {
-      setMessages(m => [...m, { role: 'assistant', content: `Error: ${j.error}` }]);
-      return;
+      // Intentamos recoger la respuesta bajo varias keys posibles
+      const text =
+        data.answer || data.message || data.content || data.text || '(respuesta vacía)';
+
+      setMessages((prev) => [...prev, { role: 'assistant', content: text }]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `⚠️ Error: ${err.message}` },
+      ]);
+    } finally {
+      setSending(false);
     }
-    setMessages(m => [...m, { role: 'assistant', content: j.answer }]);
+  }
+
+  // Enter para enviar, Shift+Enter hace salto de línea
+  function onKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
   }
 
   return (
-    <div style={wrap}>
-      <div style={{ borderBottom: '1px solid rgba(255,255,255,.1)' }}>
-        <div style={{ ...container, paddingTop: 12, paddingBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
-          <div style={{ fontWeight: 600 }}>Reporting Assistant</div>
-          <div style={{ fontSize: 13 }}>
-            <a href="/chat" style={{ color: '#e5e7eb' }}>Chat</a>
-            <span style={{ opacity: .5 }}> · </span>
-            <a href="/workspaces" style={{ color: 'rgba(255,255,255,.7)' }}>Workspaces</a>
-            <span style={{ opacity: .5 }}> · </span>
-            <a href="/login" style={{ color: 'rgba(255,255,255,.7)' }}>Entrar</a>
-          </div>
-        </div>
-      </div>
+    <div className="chat-shell">
+      <header className="chat-topbar">
+        <div className="brand">Reporting Assistant</div>
+        <nav className="nav">
+          <a href="/chat">Chat</a>
+          <a href="/workspaces">Workspaces</a>
+          <a href="/login">Entrar</a>
+        </nav>
+      </header>
 
-      <main style={container}>
-        <h1 style={h1}>Chat de reportes</h1>
+      <main className="chat-main">
+        <section className="panel">
+          <div className="panel-title">Chat de reportes</div>
 
-        <section style={{ ...card, marginBottom: 16 }}>
-          <div style={label}><b>Workspace:</b> {workspaceId || '—'}</div>
+          {/* Adjuntos */}
+          <div className="attachments">
+            <div className="row">
+              <label className="label">Adjunta archivos (.csv, .xls, .xlsx)</label>
+              <input
+                type="file"
+                multiple
+                accept=".csv,.xls,.xlsx"
+                onChange={handleFilesChange}
+              />
+            </div>
 
-          <div style={{ marginTop: 10 }}>
-            <div style={label}><b>Adjunta archivos</b> (.csv, .xls, .xlsx)</div>
-            <input type="file" multiple accept=".csv,.xls,.xlsx" onChange={onFile} style={{ marginTop: 8 }} />
-            {files.length > 0 && (
-              <ul style={list}>
-                {files.map((f, i) => <li key={i} style={{ fontSize: 13, color: 'rgba(255,255,255,.8)' }}>{f.name}</li>)}
-              </ul>
+            {filesList.length > 0 && (
+              <div className="chips">
+                {filesList.map((name, i) => (
+                  <span key={i} className="chip" title={name}>
+                    {name}
+                  </span>
+                ))}
+              </div>
             )}
           </div>
-        </section>
 
-        <section style={card}>
-          <div style={{ ...label, marginBottom: 8 }}>Conversación</div>
-
-          <div style={{ display: 'grid', gap: 8, maxHeight: 360, overflow: 'auto', marginBottom: 8 }}>
-            {messages.map((m, i) => (
-              <div key={i} style={m.role === 'user' ? msgUser : msgAsst}>{m.content}</div>
+          {/* Conversación */}
+          <div className="messages">
+            {messages.map((m, idx) => (
+              <div key={idx} className={`bubble ${m.role}`}>
+                <div className="avatar">{m.role === 'user' ? '🧑' : '🤖'}</div>
+                <div className="content">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                </div>
+              </div>
             ))}
+            {sending && (
+              <div className="bubble assistant">
+                <div className="avatar">🤖</div>
+                <div className="content typing">
+                  <span className="dot" />
+                  <span className="dot" />
+                  <span className="dot" />
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef} />
           </div>
 
-          <div style={inputArea}>
+          {/* Caja de envío */}
+          <div className="sendbar">
             <textarea
-              style={textarea}
-              rows={2}
+              className="input"
               placeholder='Escribe tu petición: “analiza ventas por cliente y dame acciones”'
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              rows={2}
             />
-            <button style={button} onClick={send}>Enviar</button>
+            <button className="btn" onClick={handleSend} disabled={sending}>
+              {sending ? 'Enviando…' : 'Enviar'}
+            </button>
           </div>
         </section>
-
-        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,.4)', fontSize: 12, marginTop: 32 }}>
-          © 2025 Reporting Assistant
-        </div>
       </main>
+
+      <footer className="chat-footer">© {new Date().getFullYear()} Reporting Assistant</footer>
     </div>
   );
 }
