@@ -1,19 +1,22 @@
 // app/layout.js
 import "./globals.css";
+import "./topbar.css";
 
 export const metadata = {
   title: "Reporting Assistant",
-  description: "Genera análisis y reportes desde tus hojas",
+  description: "Asistente de reportes con chat y datasets.",
 };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="es">
-      <body className="app">
-        <header className="navbar">
-          <div className="nav-inner container">
-            <a className="brand" href="/chat">Reporting Assistant</a>
-            <nav className="links">
+      <body>
+        {/* Topbar global (centrado y con separación) */}
+        <header className="topbar">
+          <div className="bar-inner">
+            <a href="/" className="brand">Reporting Assistant</a>
+
+            <nav className="nav">
               <a href="/chat">Chat</a>
               <a href="/workspaces">Workspaces</a>
               <a href="/login">Entrar</a>
@@ -22,14 +25,12 @@ export default function RootLayout({ children }) {
           </div>
         </header>
 
-        <main className="container">
-          {children}
-        </main>
+        {/* Contenido de página */}
+        <main className="page">{children}</main>
 
-        <footer className="footer">
-          <div className="container">
-            <span>© {new Date().getFullYear()} Reporting Assistant</span>
-          </div>
+        {/* Footer simple y consistente */}
+        <footer className="site-footer">
+          © {new Date().getFullYear()} Reporting Assistant
         </footer>
       </body>
     </html>
