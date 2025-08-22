@@ -1,0 +1,78 @@
+/* ===== Topbar global (centrado, con respiración y limpio) ===== */
+
+:root{
+  /* Si ya tienes variables en globals.css, estas no interfieren. */
+  --bg: #0b1220;
+  --text: #d2d6e3;
+  --muted: #a9b0c3;
+  --border: rgba(255,255,255,.08);
+}
+
+.topbar{
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Contenedor centrado */
+.topbar .bar-inner{
+  max-width: 1120px;     /* ancho del contenido */
+  margin: 0 auto;        /* centrado */
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* marca a izq, nav a dcha */
+  gap: 24px;
+  padding: 14px 20px;    /* respiración arriba/abajo y lateral */
+}
+
+/* Marca */
+.brand{
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: .2px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* Menú */
+.nav{
+  display: flex;
+  align-items: center;
+  gap: 20px;             /* separación entre enlaces */
+}
+
+.nav a{
+  color: var(--muted);
+  text-decoration: none;
+  padding: 8px 12px;     /* hit-area cómodo */
+  border-radius: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background .15s ease, color .15s ease;
+}
+
+.nav a:hover{
+  color: #fff;
+  background: rgba(255,255,255,.07);
+}
+
+/* ===== Layout general (espaciado respecto al header) ===== */
+
+.page{
+  max-width: 1120px;     /* mismo ancho del header */
+  margin: 28px auto;     /* distancia bajo el header + centrado */
+  padding: 0 20px;
+}
+
+/* Footer coherente */
+.site-footer{
+  max-width: 1120px;
+  margin: 48px auto 32px;
+  padding: 0 20px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+  font-size: 14px;
+}
