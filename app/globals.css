@@ -1,15 +1,46 @@
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, Apple Color Emoji, Segoe UI Emoji; background:#0b0c10; color:#e8e8e8; }
-a { color: #9bdcff; text-decoration: none; }
-.container { max-width: 720px; margin: 40px auto; padding: 24px; background: #111218; border: 1px solid #23242b; border-radius: 14px; }
-h1, h2 { margin: 0 0 16px; }
-input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #2a2b31; background: #0f1115; color: #e8e8e8; }
-button { padding: 10px 14px; border-radius: 10px; border: 1px solid #2a2b31; background: #1b6fff; color: white; cursor: pointer; }
-button.secondary { background: #23242b; color: #e8e8e8; }
-.list { margin: 12px 0; padding:0; list-style: none; }
-.card { padding: 14px; border: 1px solid #2a2b31; border-radius: 12px; margin-bottom: 10px; background:#0f1115; }
-.row { display: flex; gap: 8px; }
-.nav { display:flex; justify-content: space-between; align-items:center; margin-bottom: 16px; }
-.nav a { margin-right: 12px; }
-.err { color: #ff8a8a; }
-.spc { height: 12px; }
+/* ===== Markdown simple y tablas ===== */
+.markdown {
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.markdown h1, .markdown h2, .markdown h3 {
+  margin: 1rem 0 .5rem;
+  font-weight: 700;
+}
+
+.markdown p { margin: .5rem 0; }
+
+.markdown code {
+  background: rgba(255,255,255,.06);
+  padding: .15rem .35rem;
+  border-radius: .25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.markdown pre {
+  background: rgba(255,255,255,.06);
+  padding: .75rem;
+  border-radius: .5rem;
+  overflow: auto;
+}
+
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: .5rem 0 1rem;
+  font-size: 0.9rem;
+}
+
+.markdown th, .markdown td {
+  border: 1px solid rgba(255,255,255,.12);
+  padding: .5rem .6rem;
+  text-align: left;
+}
+
+.markdown th {
+  background: rgba(255,255,255,.06);
+  font-weight: 700;
+}
+
+.markdown ul, .markdown ol { padding-left: 1.2rem; }
