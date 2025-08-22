@@ -18,61 +18,92 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  // 1) Carga usuario y workspaces
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.auth.getUser();
-      const u = data?.user;
-      setUser(u);
-      if (!u) { window.location.href = '/login'; return; }
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error) throw error;
+        const u = data?.user;
+        if (!u) { window.location.href = '/login'; return; }
+        setUser(u);
 
-      const { data: ws } = await supabase.from('workspaces').select('*').order('created_at', { ascending: false });
-      setWorkspaces(ws || []);
-      if (ws && ws.length) setWs(ws[0]);
+        const { data: wsRows, error: wErr } = await supabase
+          .from('workspaces')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (wErr) throw wErr;
+
+        setWorkspaces(wsRows || []);
+        if (wsRows && wsRows.length) setWs(wsRows[0]);
+      } catch (e) {
+        setErr(e.message || String(e));
+      }
     })();
   }, []);
 
+  // 2) Cuando haya user y ws, carga datasets, crea/conecta conversación y carga mensajes
   useEffect(() => {
-    if (!ws) return;
+    if (!user || !ws) return; // clave: espera a tener los dos
     (async () => {
-      const { data: ds } = await supabase
-        .from('datasets')
-        .select('*')
-        .eq('workspace_id', ws.id)
-        .order('created_at', { ascending: false });
-      setDatasets(ds || []);
+      try {
+        setErr('');
 
-      const { data: convs } = await supabase
-        .from('conversations')
-        .select('*')
-        .eq('workspace_id', ws.id)
-        .order('created_at', { ascending: false })
-        .limit(1);
-      let convId = convs?.[0]?.id;
-      if (!convId) {
-        const { data: created } = await supabase
-          .from('conversations')
-          .insert({ workspace_id: ws.id, user_id: user.id, title: 'Chat de reportes' })
-          .select()
-          .single();
-        convId = created.id;
+        // datasets del workspace
+        const { data: ds, error: dsErr } = await supabase
+          .from('datasets')
+          .select('*')
+          .eq('workspace_id', ws.id)
+          .order('created_at', { ascending: false });
+        if (dsErr) throw dsErr;
+        setDatasets(ds || []);
+
+        // trae o crea conversación
+        let convId = null;
+        {
+          const { data: convs, error: cErr } = await supabase
+            .from('conversations')
+            .select('id')
+            .eq('workspace_id', ws.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+          if (cErr) throw cErr;
+
+          convId = convs?.[0]?.id;
+          if (!convId) {
+            const { data: created, error: insErr } = await supabase
+              .from('conversations')
+              .insert({ workspace_id: ws.id, user_id: user.id, title: 'Chat de reportes' })
+              .select()
+              .single();
+            if (insErr) throw insErr;
+            convId = created.id;
+          }
+        }
+        setConversationId(convId);
+
+        // carga mensajes
+        const { data: msgs, error: mErr } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('conversation_id', convId)
+          .order('created_at', { ascending: true });
+        if (mErr) throw mErr;
+        setMessages(msgs || []);
+      } catch (e) {
+        setErr(e.message || String(e));
       }
-      setConversationId(convId);
-
-      const { data: msgs } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('conversation_id', convId)
-        .order('created_at', { ascending: true });
-      setMessages(msgs || []);
     })();
-  }, [ws]);
+  }, [user, ws]);
 
   async function sendPrompt() {
     try {
       setErr('');
-      if (!input.trim() || !conversationId) return;
+      if (!input.trim()) return;
+      if (!conversationId) { setErr('Sin conversación. Recarga la página.'); return; }
       setBusy(true);
 
+      // registra mensaje del usuario
       const { data: uMsg, error: mErr } = await supabase
         .from('messages')
         .insert({
@@ -85,8 +116,12 @@ export default function ChatPage() {
         .single();
       if (mErr) throw mErr;
 
-      const datasetIds = Object.entries(selected).filter(([id, on]) => !!on).map(([id]) => id);
+      // datasets seleccionados
+      const datasetIds = Object.entries(selected)
+        .filter(([id, on]) => !!on)
+        .map(([id]) => id);
 
+      // llama a /api/chat
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,13 +134,16 @@ export default function ChatPage() {
         })
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error || 'chat failed');
+      if (!r.ok) throw new Error(j.error || 'Fallo en /api/chat');
 
-      const { data: msgs } = await supabase
+      // refresca mensajes
+      const { data: msgs, error: rErr } = await supabase
         .from('messages')
         .select('*')
         .eq('conversation_id', conversationId)
         .order('created_at', { ascending: true });
+      if (rErr) throw rErr;
+
       setMessages(msgs || []);
       setInput('');
     } catch (e) {
@@ -118,7 +156,7 @@ export default function ChatPage() {
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 16 }}>
       <h1>Chat de reportes</h1>
-      {err && <div className="err">{err}</div>}
+      {err && <div style={{ background:'#2a1212', border:'1px solid #511', padding:8, marginBottom:12 }}>{err}</div>}
 
       <div className="row" style={{ gap: 8, marginBottom: 12 }}>
         <label>Workspace:</label>
@@ -166,7 +204,7 @@ export default function ChatPage() {
         <textarea
           value={input}
           onChange={e => setInput(e.target.value)}
-          placeholder="Escribe tu petición: “analiza ventas por país y dime riesgos y acciones”"
+          placeholder="Escribe tu petición: “analiza ventas por cliente y dame acciones”"
           rows={3}
           style={{ flex: 1 }}
         />
