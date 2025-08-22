@@ -11,7 +11,9 @@ export default function ChatPage() {
     {
       role: 'assistant',
       content:
-        '¡Hola! Sube 1..N CSV/XLSX desde el botón de arriba y dime qué quieres analizar.',
+        '¡Hola! Puedes subir uno o varios archivos (CSV o Excel) con tus datos desde "Elegir archivos". ' +
+  'Después, cuéntame qué quieres analizar. ' +
+  'Ejemplos: “ranking de clientes por beneficio”, “tendencia mensual de ingresos”, “comparativa por carrier”.'
     },
   ]);
   const [input, setInput] = useState('');
