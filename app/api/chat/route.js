@@ -3,12 +3,10 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
-// Modelo por defecto (ajústalo si quieres)
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-// Nombre del bucket donde viven los CSVs exportados
 const FILES_BUCKET = process.env.NEXT_PUBLIC_FILES_BUCKET || 'uploads';
 
-// Supabase (server, con Service Role)
+// Supabase admin (por si en el futuro quieres volver a datasets)
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const admin = createClient(url, service, { auth: { persistSession: false } });
@@ -16,20 +14,17 @@ const admin = createClient(url, service, { auth: { persistSession: false } });
 // OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
 
-// ----------------- utils muy simples -----------------
+// ----------------- utils CSV→Markdown (para fallback de datasets) -------------
 function parseCsv(text) {
-  // Soporta comas simples; si necesitas comillas/escape, mete un parser real
   const lines = text.split(/\r?\n/).filter(l => l.length > 0);
   if (!lines.length) return { header: [], rows: [] };
   const header = lines[0].split(',').map(s => s.trim());
   const rows = lines.slice(1).map(l => l.split(','));
   return { header, rows };
 }
-
 function sampleRows(rows, n = 40) {
   return rows.slice(0, Math.max(1, Math.min(n, rows.length)));
 }
-
 function toMarkdownTable(header, rows) {
   if (!header.length) return '';
   const head = `| ${header.join(' | ')} |`;
@@ -37,7 +32,7 @@ function toMarkdownTable(header, rows) {
   const body = rows.map(r => `| ${r.map(c => String(c ?? '')).join(' | ')} |`).join('\n');
   return [head, sep, body].join('\n');
 }
-// -----------------------------------------------------
+// -----------------------------------------------------------------------------
 
 export async function POST(req) {
   try {
@@ -47,53 +42,59 @@ export async function POST(req) {
       fileIds = [],
       prompt = '',
       messages = [],
+      previewsMarkdown = [], // ← clave nueva: previews que vienen de /api/upload
     } = body || {};
 
-    if (!workspaceId) {
-      return NextResponse.json({ error: 'workspaceId requerido' }, { status: 400 });
-    }
-
-    // 1) Busca datasets listos (ready = true) del workspace
-    const { data: ds, error: dsErr } = await admin
-      .from('datasets')
-      .select('id,name,csv_path,ready')
-      .eq('workspace_id', workspaceId)
-      .in('id', fileIds.length ? fileIds : ['00000000-0000-0000-0000-000000000000'])
-      .eq('ready', true);
-
-    if (dsErr) {
-      return NextResponse.json({ error: `Error datasets: ${dsErr.message}` }, { status: 500 });
-    }
-
-    if (!ds || ds.length === 0) {
-      return NextResponse.json({ error: 'No hay datasets listos para analizar.' }, { status: 200 });
-    }
-
-    // 2) Descarga CSVs y crea previews Markdown
     let previews = [];
-    for (const d of ds) {
-      if (!d.csv_path) continue;
-      const { data: file, error: dlErr } = await admin.storage
-        .from(FILES_BUCKET)
-        .download(d.csv_path);
 
-      if (dlErr) {
-        previews.push(`- ${d.name || d.id}: no se pudo descargar (${dlErr.message})`);
-        continue;
+    if (Array.isArray(previewsMarkdown) && previewsMarkdown.length > 0) {
+      // Camino NUEVO: archivos subidos desde el chat (sin datasets)
+      previews = previewsMarkdown;
+    } else if (workspaceId && fileIds.length > 0) {
+      // Camino antiguo (datasets listos en Supabase, por si lo quieres conservar)
+      const { data: ds, error: dsErr } = await admin
+        .from('datasets')
+        .select('id,name,csv_path,ready')
+        .eq('workspace_id', workspaceId)
+        .in('id', fileIds)
+        .eq('ready', true);
+
+      if (dsErr) {
+        return NextResponse.json({ error: `Error datasets: ${dsErr.message}` }, { status: 500 });
       }
-      const text = await file.text();
-      const { header, rows } = parseCsv(text);
-      const sample = sampleRows(rows, 20);
-      const md = toMarkdownTable(header, sample);
-      previews.push(`### ${d.name || d.id}\n${md || '_vacío_'}\n`);
+
+      if (!ds || ds.length === 0) {
+        return NextResponse.json({ error: 'No hay datasets listos para analizar.' }, { status: 200 });
+      }
+
+      for (const d of ds) {
+        if (!d.csv_path) continue;
+        const { data: file, error: dlErr } = await admin.storage
+          .from(FILES_BUCKET)
+          .download(d.csv_path);
+        if (dlErr) {
+          previews.push(`- ${d.name || d.id}: no se pudo descargar (${dlErr.message})`);
+          continue;
+        }
+        const text = await file.text();
+        const { header, rows } = parseCsv(text);
+        const sample = sampleRows(rows, 20);
+        const md = toMarkdownTable(header, sample);
+        previews.push(`### ${d.name || d.id}\n${md || '_vacío_'}\n`);
+      }
+    } else {
+      // Sin previews ni datasets → responde educadamente
+      return NextResponse.json(
+        { ok: true, answer: 'No adjuntaste archivos ni elegiste datasets. Sube 1..N CSV/XLSX o indícame qué usar.' },
+        { status: 200 }
+      );
     }
 
     const system = [
       'Eres un analista senior de datos.',
-      'Recibirás previews (muestras) de uno o varios datasets en formato tabla Markdown.',
-      'Responde en español, claro y accionable.',
-      'Si el usuario lo pide, genera tablas en Markdown y, si corresponde, un CSV sintetizado.',
-      'Sé muy concreto en insights y recomendaciones de negocio.',
+      'Recibirás previews (muestras) de datasets en tablas Markdown.',
+      'Responde en español con insights claros y accionables.',
+      'Si procede, muestra tablas Markdown y sugiere agregaciones/segmentaciones.',
     ].join(' ');
 
     const userContent = [
