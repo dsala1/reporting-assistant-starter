@@ -5,26 +5,23 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 export default function ChatPage() {
-  // Estado básico del chat
-  const [filesPreview, setFilesPreview] = useState([]); // array de markdown (uno por archivo)
-  const [filesList, setFilesList] = useState([]); // nombres de archivos adjuntos
+  const [filesPreview, setFilesPreview] = useState([]);   // markdown de tablas
+  const [filesList, setFilesList] = useState([]);         // nombres de archivo
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
       content:
-        '¡Hola! Sube 1..N CSV/XLSX desde el botón de arriba y dime qué necesitas analizar.',
+        '¡Hola! Sube 1..N CSV/XLSX desde el botón de arriba y dime qué quieres analizar.',
     },
   ]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef(null);
 
-  // Autoscroll al final cuando hay cambios
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, sending]);
 
-  // Subida de archivos al endpoint /api/upload
   async function handleFilesChange(e) {
     try {
       const files = Array.from(e.target.files || []);
@@ -36,77 +33,68 @@ export default function ChatPage() {
       const res = await fetch('/api/upload', { method: 'POST', body: form });
       const data = await res.json();
 
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || 'Error subiendo archivos');
-      }
+      if (!res.ok || !data?.ok) throw new Error(data?.error || 'Error de subida');
 
-      // Guardamos previews markdown y nombres para chips
       setFilesPreview(data.previewsMarkdown || []);
       setFilesList(files.map((f) => f.name));
 
-      // Mensaje del asistente confirmando adjuntos
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: `He recibido ${files.length} archivo${
+          content: `Recibido: ${files.length} archivo${
             files.length > 1 ? 's' : ''
-          }. Cuando me digas qué buscas, los analizo.`,
+          }. Indícame tu petición y los uso en el análisis.`,
         },
       ]);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: `⚠️ Error al subir archivos: ${err.message}` },
+        { role: 'assistant', content: `Error al subir archivos: ${err.message}` },
       ]);
     } finally {
-      // Limpia el input de archivos para permitir volver a subir los mismos si se quiere
       e.target.value = '';
     }
   }
 
-  // Enviar prompt al backend /api/chat con las previews
   async function handleSend() {
     const prompt = (input || '').trim();
     if (!prompt || sending) return;
 
-    // pinta el mensaje del usuario
     setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
     setInput('');
     setSending(true);
 
     try {
+      const payload = {
+        prompt,
+        previews: filesPreview,         // clave que espera el back
+        filesMarkdown: filesPreview,     // redundancia por compatibilidad
+      };
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Mandamos el prompt y las previews (markdown) al servidor
-        body: JSON.stringify({
-          prompt,
-          previews: filesPreview, // <- deja esto así; tu route ya lo estaba usando
-        }),
+        body: JSON.stringify(payload),
       });
-
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || 'Error generando respuesta');
-      }
 
-      // Intentamos recoger la respuesta bajo varias keys posibles
+      if (!res.ok) throw new Error(data?.error || 'Error generando respuesta');
+
       const text =
-        data.answer || data.message || data.content || data.text || '(respuesta vacía)';
+        data.answer || data.message || data.content || data.text || '(sin contenido)';
 
       setMessages((prev) => [...prev, { role: 'assistant', content: text }]);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: `⚠️ Error: ${err.message}` },
+        { role: 'assistant', content: `Error: ${err.message}` },
       ]);
     } finally {
       setSending(false);
     }
   }
 
-  // Enter para enviar, Shift+Enter hace salto de línea
   function onKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -115,8 +103,8 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="chat-shell">
-      <header className="chat-topbar">
+    <div className="shell">
+      <header className="topbar">
         <div className="brand">Reporting Assistant</div>
         <nav className="nav">
           <a href="/chat">Chat</a>
@@ -125,14 +113,15 @@ export default function ChatPage() {
         </nav>
       </header>
 
-      <main className="chat-main">
-        <section className="panel">
-          <div className="panel-title">Chat de reportes</div>
+      <main className="container">
+        <section className="card">
+          <div className="card-head">
+            <h1>Chat de reportes</h1>
+          </div>
 
-          {/* Adjuntos */}
-          <div className="attachments">
-            <div className="row">
-              <label className="label">Adjunta archivos (.csv, .xls, .xlsx)</label>
+          <div className="attach">
+            <label className="attach-label">Adjunta archivos (.csv, .xls, .xlsx)</label>
+            <div className="attach-row">
               <input
                 type="file"
                 multiple
@@ -148,42 +137,42 @@ export default function ChatPage() {
                     {name}
                   </span>
                 ))}
+                <span className="chip use">Usando {filesList.length}</span>
               </div>
             )}
           </div>
 
-          {/* Conversación */}
           <div className="messages">
             {messages.map((m, idx) => (
-              <div key={idx} className={`bubble ${m.role}`}>
-                <div className="avatar">{m.role === 'user' ? '🧑' : '🤖'}</div>
-                <div className="content">
+              <div key={idx} className={`row ${m.role}`}>
+                <div className="badge">{m.role === 'user' ? 'U' : 'A'}</div>
+                <div className="bubble">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                 </div>
               </div>
             ))}
+
             {sending && (
-              <div className="bubble assistant">
-                <div className="avatar">🤖</div>
-                <div className="content typing">
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span className="dot" />
+              <div className="row assistant">
+                <div className="badge">A</div>
+                <div className="bubble typing">
+                  <span />
+                  <span />
+                  <span />
                 </div>
               </div>
             )}
             <div ref={bottomRef} />
           </div>
 
-          {/* Caja de envío */}
-          <div className="sendbar">
+          <div className="send">
             <textarea
               className="input"
+              rows={2}
               placeholder='Escribe tu petición: “analiza ventas por cliente y dame acciones”'
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              rows={2}
             />
             <button className="btn" onClick={handleSend} disabled={sending}>
               {sending ? 'Enviando…' : 'Enviar'}
@@ -192,7 +181,7 @@ export default function ChatPage() {
         </section>
       </main>
 
-      <footer className="chat-footer">© {new Date().getFullYear()} Reporting Assistant</footer>
+      <footer className="foot">© {new Date().getFullYear()} Reporting Assistant</footer>
     </div>
   );
 }
