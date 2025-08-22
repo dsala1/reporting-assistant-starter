@@ -1,25 +1,36 @@
-import './globals.css';
+// app/layout.js
+import "./globals.css";
 
 export const metadata = {
-  title: 'Reporting Assistant Starter',
-  description: 'Auth + Workspaces con Supabase',
+  title: "Reporting Assistant",
+  description: "Genera análisis y reportes desde tus hojas",
 };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="es">
-      <body>
-        <div className="container">
-          <div className="nav">
-            <div><a href="/">Inicio</a></div>
-            <div style={{display:'flex', gap:12}}>
+      <body className="app">
+        <header className="navbar">
+          <div className="nav-inner container">
+            <a className="brand" href="/chat">Reporting Assistant</a>
+            <nav className="links">
+              <a href="/chat">Chat</a>
               <a href="/workspaces">Workspaces</a>
               <a href="/login">Entrar</a>
               <a href="/signup">Registro</a>
-            </div>
+            </nav>
           </div>
+        </header>
+
+        <main className="container">
           {children}
-        </div>
+        </main>
+
+        <footer className="footer">
+          <div className="container">
+            <span>© {new Date().getFullYear()} Reporting Assistant</span>
+          </div>
+        </footer>
       </body>
     </html>
   );
