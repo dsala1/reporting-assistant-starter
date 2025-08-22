@@ -1,46 +1,119 @@
-/* ===== Markdown simple y tablas ===== */
-.markdown {
-  line-height: 1.6;
-  font-size: 0.95rem;
+/* ====== Base ====== */
+:root{
+  --bg: #0b0f14;
+  --panel: #111820;
+  --panel-2: #0f141b;
+  --border: rgba(255,255,255,.12);
+  --text: #e6e6e6;
+  --muted: rgba(230,230,230,.65);
+  --brand: #3a8bff;
+  --brand-2: #2f74d3;
+  --ok: #38d39f;
+  --danger: #ff6b6b;
 }
 
-.markdown h1, .markdown h2, .markdown h3 {
-  margin: 1rem 0 .5rem;
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body.app {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+}
+
+a { color: var(--text); text-decoration: none; }
+a:hover { opacity: .85; }
+
+/* ====== Layout ====== */
+.container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+
+.navbar {
+  position: sticky; top: 0; z-index: 10;
+  background: linear-gradient(to bottom, rgba(17,24,32,.9), rgba(17,24,32,.6));
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-inner { display:flex; align-items:center; justify-content:space-between; padding: 10px 0; }
+.brand { font-weight: 800; letter-spacing:.2px; }
+
+.links { display:flex; gap: 16px; }
+.links a { opacity:.85; }
+.links a:hover { opacity:1; }
+
+.footer {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 16px 0;
+  color: var(--muted);
+}
+
+/* ====== Cards / bloques ====== */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.card + .card { margin-top: 16px; }
+
+/* ====== Controles ====== */
+input[type="text"], input[type="email"], input[type="password"], textarea, select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  width: 100%;
+  outline: none;
+}
+textarea { resize: vertical; }
+
+.checkbox-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.checkbox-row small { color: var(--muted); }
+
+/* ====== Botones ====== */
+.btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  padding: 9px 14px;
   font-weight: 700;
+  cursor: pointer;
+  transition: .15s ease;
 }
+.btn:disabled { opacity:.6; cursor: default; }
+.btn-primary { background: var(--brand); border-color: var(--brand-2); color: white; }
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-secondary { background: transparent; border-color: var(--border); color: var(--text); }
+.btn-secondary:hover { background: rgba(255,255,255,.04); }
 
+/* ====== Markdown (tablas, listas, código) ====== */
+.markdown { line-height: 1.6; font-size: .98rem; }
+.markdown h1, .markdown h2, .markdown h3 { margin: 1rem 0 .5rem; font-weight: 800; }
 .markdown p { margin: .5rem 0; }
-
 .markdown code {
   background: rgba(255,255,255,.06);
   padding: .15rem .35rem;
   border-radius: .25rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
 }
-
 .markdown pre {
   background: rgba(255,255,255,.06);
   padding: .75rem;
   border-radius: .5rem;
   overflow: auto;
 }
-
 .markdown table {
   width: 100%;
   border-collapse: collapse;
   margin: .5rem 0 1rem;
-  font-size: 0.9rem;
+  font-size: .92rem;
 }
-
 .markdown th, .markdown td {
-  border: 1px solid rgba(255,255,255,.12);
+  border: 1px solid var(--border);
   padding: .5rem .6rem;
   text-align: left;
 }
-
-.markdown th {
-  background: rgba(255,255,255,.06);
-  font-weight: 700;
-}
-
+.markdown th { background: rgba(255,255,255,.06); font-weight: 800; }
 .markdown ul, .markdown ol { padding-left: 1.2rem; }
