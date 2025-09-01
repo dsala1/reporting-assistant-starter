@@ -1,68 +1,75 @@
-// app/components/Topbar.jsx
+// components/Topbar.jsx
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
-
 export default function Topbar() {
-  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [isAuthed, setIsAuthed] = useState(false);
+  const pathname = usePathname();
+  const router = useRouter();
 
   useEffect(() => {
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    );
+
     let mounted = true;
 
-    async function loadSession() {
-      const { data } = await supabase.auth.getSession();
+    // 1) Estado inicial
+    supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setUserEmail(data.session?.user?.email ?? null);
-    }
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUserEmail(session?.user?.email ?? null);
+      setIsAuthed(Boolean(data.session));
     });
 
-    loadSession();
+    // 2) Reaccionar a cambios de sesión
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsAuthed(Boolean(session));
+    });
+
     return () => {
       mounted = false;
       sub.subscription.unsubscribe();
     };
   }, []);
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    window.location.href = '/login';
-  };
+  const linkCls = (href) =>
+    `px-3 py-1 rounded-md text-sm ${
+      pathname === href ? 'bg-zinc-800 text-white' : 'text-zinc-300 hover:text-white'
+    }`;
 
   return (
-    <header className="topbar">
-      <div className="topbar-inner container">
-        <div className="brand">
-          <Link href="/chat">Reporting Assistant</Link>
-        </div>
+    <header className="w-full border-b border-zinc-800 bg-[#0A0F1A]/80 sticky top-0 z-40 backdrop-blur">
+      <div className="mx-auto max-w-5xl flex items-center justify-between px-4 py-3">
+        {/* Marca (texto simple; si quieres el logo de nuevo, aquí) */}
+        <Link href="/chat" className="font-semibold text-zinc-100">
+          Reporting Assistant
+        </Link>
 
-        <nav className="nav">
-          <Link href="/chat">Chat</Link>
-          <Link href="/playbook">Playbook</Link>
-        </nav>
+        <nav className="flex items-center gap-1">
+          <Link href="/chat" className={linkCls('/chat')}>Chat</Link>
+          <Link href="/playbook" className={linkCls('/playbook')}>Playbook</Link>
 
-        <div className="actions">
-          {userEmail ? (
-            <>
-              <span className="muted email">{userEmail}</span>
-              <button className="btn" onClick={handleLogout}>Salir</button>
-            </>
+          {/* Lado derecho: Entrar / Salir */}
+          {isAuthed ? (
+            <button
+              className="ml-3 px-3 py-1 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-500"
+              onClick={() => router.push('/logout')}
+            >
+              Salir
+            </button>
           ) : (
-            <>
-              <Link className="btn ghost" href="/login">Entrar</Link>
-              <Link className="btn" href="/signup">Registro</Link>
-            </>
+            <button
+              className="ml-3 px-3 py-1 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-500"
+              onClick={() => router.push('/login')}
+            >
+              Entrar
+            </button>
           )}
-        </div>
+        </nav>
       </div>
     </header>
   );
