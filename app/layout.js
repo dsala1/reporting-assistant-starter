@@ -4,7 +4,7 @@ import Topbar from './components/Topbar';
 
 export const metadata = {
   title: 'Reporting Assistant',
-  description: 'Asistente de reportes',
+  description: 'Asistente de reporting con chat, playbook y análisis de archivos',
 };
 
 export default function RootLayout({ children }) {
@@ -12,10 +12,12 @@ export default function RootLayout({ children }) {
     <html lang="es">
       <body>
         <Topbar />
-        <main className="ra-main">
+        <main className="shell">
           {children}
         </main>
-        <footer className="ra-footer">© 2025 Reporting Assistant</footer>
+        <footer className="footer container">
+          © 2025 Reporting Assistant
+        </footer>
       </body>
     </html>
   );
