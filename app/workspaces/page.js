@@ -404,29 +404,3 @@ export default function WorkspacesPage() {
     </div>
   );
 }
-'use client';
-
-import AuthGuard from '../components/AuthGuard';
-
-export default function WorkspacesPage() {
-  return (
-    <AuthGuard>
-      <main style={{ maxWidth: 980, margin: '40px auto', padding: '0 16px' }}>
-        <section
-          style={{
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: 14,
-            padding: 18,
-          }}
-        >
-          <h2 style={{ margin: '0 0 12px 0' }}>Workspaces</h2>
-          <p style={{ opacity: 0.8, margin: 0 }}>
-            Administra aquí tus archivos y datasets. (Si ya tenías una UI más avanzada, puedes
-            reemplazar este contenido sin tocar el guard.)
-          </p>
-        </section>
-      </main>
-    </AuthGuard>
-  );
-}
