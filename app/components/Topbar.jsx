@@ -1,3 +1,4 @@
+// app/components/Topbar.jsx
 'use client';
 
 import Link from 'next/link';
@@ -10,47 +11,56 @@ const supabase = createClient(
 );
 
 export default function Topbar() {
-  const [session, setSession] = useState(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data }) => {
+    async function loadSession() {
+      const { data } = await supabase.auth.getSession();
       if (!mounted) return;
-      setSession(data.session ?? null);
+      setUserEmail(data.session?.user?.email ?? null);
+    }
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUserEmail(session?.user?.email ?? null);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, newSession) => {
-      setSession(newSession ?? null);
-    });
-
-    return () => sub?.subscription?.unsubscribe();
+    loadSession();
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
-  async function handleLogout() {
+  const handleLogout = async () => {
     await supabase.auth.signOut();
     window.location.href = '/login';
-  }
+  };
 
   return (
-    <header className="ra-topbar">
-      <div className="ra-topbar__inner">
-        <Link href="/chat" className="ra-brand">Reporting Assistant</Link>
+    <header className="topbar">
+      <div className="topbar-inner container">
+        <div className="brand">
+          <Link href="/chat">Reporting Assistant</Link>
+        </div>
 
-        <nav className="ra-nav">
-          <Link href="/chat" className="ra-nav__link">Chat</Link>
-          <Link href="/playbook" className="ra-nav__link">Playbook</Link>
-          {/* Workspaces oculto del menú: no lo renderizamos */}
+        <nav className="nav">
+          <Link href="/chat">Chat</Link>
+          <Link href="/playbook">Playbook</Link>
         </nav>
 
-        <div className="ra-actions">
-          {!session ? (
+        <div className="actions">
+          {userEmail ? (
             <>
-              <Link href="/login" className="ra-btn ra-btn--ghost">Entrar</Link>
-              {/* No mostramos Registro aquí; estará en /login */}
+              <span className="muted email">{userEmail}</span>
+              <button className="btn" onClick={handleLogout}>Salir</button>
             </>
           ) : (
-            <button onClick={handleLogout} className="ra-btn">Salir</button>
+            <>
+              <Link className="btn ghost" href="/login">Entrar</Link>
+              <Link className="btn" href="/signup">Registro</Link>
+            </>
           )}
         </div>
       </div>
