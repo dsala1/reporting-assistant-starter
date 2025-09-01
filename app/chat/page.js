@@ -1,190 +1,176 @@
-import AuthGuard from '../components/AuthGuard';
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useRef, useState } from 'react';
+import AuthGuard from '../components/AuthGuard';
 
 export default function ChatPage() {
-  const [filesPreview, setFilesPreview] = useState([]);   // markdown de tablas
-  const [filesList, setFilesList] = useState([]);         // nombres de archivo
+  const [files, setFiles] = useState([]);
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content:
-        '¡Hola! Puedes subir uno o varios archivos (CSV o Excel) con tus datos desde "Elegir archivos". ' +
-  'Después, cuéntame qué quieres analizar. ' +
-  'Ejemplos: “ranking de clientes por beneficio”, “tendencia mensual de ingresos”, “comparativa por carrier”.'
+      text:
+        '¡Hola! Puedes subir uno o varios archivos (CSV o Excel) desde “Elegir archivos”. ' +
+        'Luego dime qué te interesa analizar (p.ej., “ranking de clientes por beneficio”, ' +
+        '“tendencia mensual de ingresos”, “comparativa por carrier”).',
     },
   ]);
-  const [input, setInput] = useState('');
+  const inputRef = useRef(null);
   const [sending, setSending] = useState(false);
-  const bottomRef = useRef(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, sending]);
+  const handleFileChange = (e) => {
+    const f = Array.from(e.target.files || []);
+    setFiles(f);
+  };
 
-  async function handleFilesChange(e) {
-    try {
-      const files = Array.from(e.target.files || []);
-      if (!files.length) return;
+  const sendMessage = async () => {
+    const text = (inputRef.current?.value || '').trim();
+    if (!text) return;
 
-      const form = new FormData();
-      files.forEach((f) => form.append('files', f));
+    setMessages((prev) => [...prev, { role: 'user', text }]);
+    inputRef.current.value = '';
 
-      const res = await fetch('/api/upload', { method: 'POST', body: form });
-      const data = await res.json();
-
-      if (!res.ok || !data?.ok) throw new Error(data?.error || 'Error de subida');
-
-      setFilesPreview(data.previewsMarkdown || []);
-      setFilesList(files.map((f) => f.name));
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Recibido: ${files.length} archivo${
-            files.length > 1 ? 's' : ''
-          }. Indícame tu petición y los uso en el análisis.`,
-        },
-      ]);
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `Error al subir archivos: ${err.message}` },
-      ]);
-    } finally {
-      e.target.value = '';
-    }
-  }
-
-  async function handleSend() {
-    const prompt = (input || '').trim();
-    if (!prompt || sending) return;
-
-    setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
-    setInput('');
     setSending(true);
-
     try {
-      const payload = {
-        prompt,
-        previews: filesPreview,         // clave que espera el back
-        filesMarkdown: filesPreview,     // redundancia por compatibilidad
-      };
+      // Envía archivos + prompt a tu endpoint
+      const form = new FormData();
+      form.append('prompt', text);
+      files.forEach((f) => form.append('files', f, f.name));
 
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: form,
       });
-      const data = await res.json();
 
-      if (!res.ok) throw new Error(data?.error || 'Error generando respuesta');
+      if (!res.ok) {
+        const errText = await res.text().catch(() => 'Error');
+        throw new Error(errText);
+      }
 
-      const text =
-        data.answer || data.message || data.content || data.text || '(sin contenido)';
+      const data = await res.json().catch(() => ({}));
+      const reply =
+        data?.reply ||
+        data?.text ||
+        'OK. He procesado tu petición. (Ajusta el backend para respuestas más ricas)';
 
-      setMessages((prev) => [...prev, { role: 'assistant', content: text }]);
+      setMessages((prev) => [...prev, { role: 'assistant', text: reply }]);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: `Error: ${err.message}` },
+        { role: 'assistant', text: `Error al procesar: ${err.message}` },
       ]);
     } finally {
       setSending(false);
     }
-  }
-
-  function onKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  }
+  };
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand">Reporting Assistant</div>
-        <nav className="nav">
-          <a href="/chat">Chat</a>
-          <a href="/workspaces">Workspaces</a>
-          <a href="/login">Entrar</a>
-        </nav>
-      </header>
-
-      <main className="container">
-        <section className="card">
-          <div className="card-head">
-            <h1>Chat de reportes</h1>
-          </div>
-
-          <div className="attach">
-            <label className="attach-label">Adjunta archivos (.csv, .xls, .xlsx)</label>
-            <div className="attach-row">
+    <AuthGuard>
+      <main style={{ maxWidth: 920, margin: '40px auto', padding: '0 16px' }}>
+        <section
+          style={{
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: 14,
+            padding: 16,
+          }}
+        >
+          {/* Uploader */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 13, opacity: 0.85 }}>Adjunta archivos (.csv, .xls, .xlsx)</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <input
                 type="file"
-                multiple
                 accept=".csv,.xls,.xlsx"
-                onChange={handleFilesChange}
+                multiple
+                onChange={handleFileChange}
+                style={{ fontSize: 13 }}
               />
+              <span style={{ fontSize: 12, opacity: 0.7 }}>
+                {files.length ? `${files.length} archivo(s) seleccionado(s)` : 'Ningún archivo seleccionado'}
+              </span>
             </div>
-
-            {filesList.length > 0 && (
-              <div className="chips">
-                {filesList.map((name, i) => (
-                  <span key={i} className="chip" title={name}>
-                    {name}
-                  </span>
-                ))}
-                <span className="chip use">Usando {filesList.length}</span>
-              </div>
-            )}
           </div>
 
-          <div className="messages">
-            {messages.map((m, idx) => (
-              <div key={idx} className={`row ${m.role}`}>
-                <div className="badge">{m.role === 'user' ? 'U' : 'A'}</div>
-                <div className="bubble">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+          {/* Conversación */}
+          <div
+            style={{
+              display: 'grid',
+              gap: 10,
+              maxHeight: 420,
+              overflow: 'auto',
+              paddingRight: 8,
+              marginTop: 8,
+              marginBottom: 12,
+            }}
+          >
+            {messages.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
+                }}
+              >
+                <div
+                  style={{
+                    maxWidth: '86%',
+                    background: m.role === 'user' ? 'rgba(59,130,246,.15)' : 'rgba(255,255,255,.04)',
+                    border: '1px solid rgba(255,255,255,.08)',
+                    borderRadius: 10,
+                    padding: '10px 12px',
+                    fontSize: 14,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {m.text}
                 </div>
               </div>
             ))}
-
-            {sending && (
-              <div className="row assistant">
-                <div className="badge">A</div>
-                <div className="bubble typing">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              </div>
-            )}
-            <div ref={bottomRef} />
           </div>
 
-          <div className="send">
+          {/* Input */}
+          <div style={{ display: 'flex', gap: 10 }}>
             <textarea
-              className="input"
-              rows={2}
+              ref={inputRef}
+              rows={1}
               placeholder='Escribe tu petición: “analiza ventas por cliente y dame acciones”'
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onKeyDown}
+              style={{
+                flex: 1,
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                borderRadius: 10,
+                padding: '10px 12px',
+                fontSize: 14,
+                resize: 'vertical',
+                minHeight: 40,
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
             />
-            <button className="btn" onClick={handleSend} disabled={sending}>
+            <button
+              onClick={sendMessage}
+              disabled={sending}
+              style={{
+                minWidth: 88,
+                borderRadius: 10,
+                border: '1px solid #3b82f6',
+                background: '#3b82f6',
+                color: '#fff',
+                fontSize: 14,
+                padding: '10px 14px',
+                cursor: 'pointer',
+                opacity: sending ? 0.7 : 1,
+              }}
+            >
               {sending ? 'Enviando…' : 'Enviar'}
             </button>
           </div>
         </section>
       </main>
-
-      <footer className="foot">© {new Date().getFullYear()} Reporting Assistant</footer>
-    </div>
+    </AuthGuard>
   );
 }
