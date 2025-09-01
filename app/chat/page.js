@@ -1,3 +1,4 @@
+import AuthGuard from '../components/AuthGuard';
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
