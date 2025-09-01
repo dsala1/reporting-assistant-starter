@@ -2,6 +2,6 @@
 import { redirect } from 'next/navigation';
 
 export default function Home() {
-  // Portada -> /chat
-  redirect('/chat');
+  // Entrada obligatoria por login. Luego la app te lleva al chat.
+  redirect('/login?next=/chat');
 }
