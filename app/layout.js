@@ -1,23 +1,18 @@
-// app/layout.js
-import './globals.css';
-import Topbar from './components/Topbar';
-
 export const metadata = {
   title: 'Reporting Assistant',
-  description: 'Asistente de reporting con chat, playbook y análisis de archivos',
+  description: 'Asistente de reporting con chat y playbook',
 };
+
+import './globals.css';
+import Topbar from './Topbar';
 
 export default function RootLayout({ children }) {
   return (
     <html lang="es">
-      <body>
+      <body className="site">
         <Topbar />
-        <main className="shell">
-          {children}
-        </main>
-        <footer className="footer container">
-          © 2025 Reporting Assistant
-        </footer>
+        <main className="container">{children}</main>
+        <footer className="site__footer">© 2025 Reporting Assistant</footer>
       </body>
     </html>
   );
